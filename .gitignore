@@ -5,6 +5,8 @@ src-tauri/target/
 src-tauri/gen/
 /StepMaster.exe
 /stepmaster.exe
+/stepmaster-old.exe
+*.old-*
 *.key
 *.log
 .playwright-mcp/
