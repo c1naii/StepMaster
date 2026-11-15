@@ -38,7 +38,13 @@ $out = Join-Path $root "release"
 New-Item -ItemType Directory -Force $out | Out-Null
 # Windows keeps the old letter case when overwriting, so remove old copies first.
 foreach ($f in @((Join-Path $out $name), (Join-Path $out "$name.sig"), (Join-Path $root $name))) {
-  if (Test-Path $f) { Remove-Item $f -Force }
+  if (Test-Path $f) {
+    try { Remove-Item $f -Force -ErrorAction Stop }
+    catch {
+      # A locked exe (antivirus scan, running copy) can still be renamed out of the way.
+      Rename-Item $f ("{0}.old-{1}" -f (Split-Path $f -Leaf), (Get-Date -Format "yyyyMMddHHmmss")) -ErrorAction Stop
+    }
+  }
 }
 Copy-Item $exe (Join-Path $out $name)
 
