@@ -19,7 +19,8 @@ if ($Version) {
   function Set-Version($file, $pattern, $replacement) {
     $path = Join-Path $root $file
     $text = [IO.File]::ReadAllText($path, $utf8)
-    $new = [regex]::Replace($text, $pattern, $replacement, 1)
+    # Only the FIRST match (the package version), never dependency versions further down.
+    $new = ([regex]$pattern).Replace($text, $replacement, 1)
     [IO.File]::WriteAllText($path, $new, $utf8)
   }
   Set-Version "src-tauri\Cargo.toml" '(?m)^version = "[^"]+"' "version = `"$Version`""
