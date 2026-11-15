@@ -106,6 +106,11 @@ pub fn list_disks() -> Vec<DiskInfo> {
     out
 }
 
+/// (mount, total, available) for every disk.
+pub fn list_disks_raw() -> Vec<(String, u64, u64)> {
+    list_disks().into_iter().map(|d| (d.mount, d.total, d.available)).collect()
+}
+
 #[tauri::command]
 pub async fn system_snapshot(state: State<'_, AppState>) -> Res<Snapshot> {
     let (cpu, freq, used, total) = {

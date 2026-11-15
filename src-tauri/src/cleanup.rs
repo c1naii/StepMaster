@@ -334,6 +334,38 @@ pub async fn cleanup_run(app: AppHandle, ids: Vec<String>) -> Res<CleanResult> {
     .await
 }
 
+/// Categories the diagnostics may clean on its own: pure caches and temp files.
+/// Excluded on purpose: the Recycle Bin (may hold something the user still wants) and crash
+/// dumps (needed to investigate blue screens the same report may show).
+fn safe_ids(admin: bool) -> Vec<&'static str> {
+    let mut v = vec!["user_temp", "browser_cache", "thumbnails", "error_reports", "shader_cache"];
+    if admin {
+        v.extend(["windows_temp", "update_cache", "delivery_opt"]);
+    }
+    v
+}
+
+pub fn safe_junk_size(admin: bool) -> u64 {
+    safe_ids(admin)
+        .par_iter()
+        .map(|id| targets(id).iter().map(|t| target_stats(t).size).sum::<u64>())
+        .sum()
+}
+
+/// Cleans the safe categories; returns bytes freed (also recorded in history).
+pub fn clean_safe(data_dir: &Path, admin: bool) -> u64 {
+    let mut total = Deleted::default();
+    for id in safe_ids(admin) {
+        for t in targets(id) {
+            total += target_clean(&t);
+        }
+    }
+    if total.freed > 0 {
+        add_history(data_dir, total.freed);
+    }
+    total.freed
+}
+
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct History {

@@ -64,7 +64,7 @@ fn load(dir: &Path) -> Saved {
     std::fs::read_to_string(state_path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-fn is_laptop() -> bool {
+pub(crate) fn is_laptop() -> bool {
     use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
     let mut s: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
     if unsafe { GetSystemPowerStatus(&mut s) } == 0 {

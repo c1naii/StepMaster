@@ -10,6 +10,50 @@ fn show<T: serde::Serialize>(label: &str, v: &T) {
 
 #[test]
 #[ignore]
+fn smoke_diagnostics_and_downloads() {
+    let t = std::time::Instant::now();
+    let ps: crate::diagnostics::PsRaw = crate::util::ps_json(crate::diagnostics::PS_SCRIPT).expect("diagnostics PowerShell must parse");
+    println!("\n== diag raw in {:?}", t.elapsed());
+    println!("shutdowns {:?} bugchecks {:?} whea {:?} disk {:?} ntfs {:?} throttling {:?} wu {:?}", ps.shutdowns, ps.bugchecks, ps.whea, ps.disk_errors, ps.ntfs_errors, ps.throttling, ps.wu_failures);
+    println!("crashes {:?}", ps.app_crashes);
+    println!("devices {:?}", ps.devices);
+    println!("disks {:?} smart {:?} thermal {:?} battery {:?}/{:?}", ps.disks, ps.smart_fail, ps.thermal_c, ps.battery_design, ps.battery_full);
+    println!("defender available={} rt={} sig={} scan={} threats={} recent={} excl={}", ps.defender.available, ps.defender.realtime, ps.defender.sig_age_days, ps.defender.quick_scan_age_days, ps.defender.threats.len(), ps.defender.recent_detections, ps.defender.exclusions.len());
+    println!("otherAv {:?} firewallOff {:?} tasks {}", ps.other_av, ps.firewall_off, ps.tasks.len());
+    println!("suspicious tasks: {:?}", crate::diagnostics::suspicious_tasks(&ps.tasks));
+    let hosts = std::fs::read_to_string(crate::util::system_root().join(r"System32\drivers\etc\hosts")).unwrap_or_default();
+    println!("hosts suspicious: {:?}", crate::diagnostics::hosts_suspicious(&hosts));
+
+    let installed = crate::programs::installed_names();
+    for place in ["{374DE290-123F-4565-9164-39C4925E467B}", "Desktop"] {
+        let fallback = if place == "Desktop" { "Desktop" } else { "Downloads" };
+        if let Some(root) = crate::downloads::known_folder(place, fallback) {
+            let t = std::time::Instant::now();
+            let r = crate::downloads::analyze(&root, &installed);
+            let v = serde_json::to_value(&r).unwrap();
+            let items = v["items"].as_array().unwrap();
+            let count = |f: &str| items.iter().filter(|i| i["flags"].as_array().unwrap().iter().any(|x| x == f)).count();
+            println!(
+                "\n== {} : {} items, total {} MB in {:?}; installed={} extracted={} duplicate={} partial={} old={}",
+                root.display(),
+                items.len(),
+                v["total"].as_u64().unwrap() / 1024 / 1024,
+                t.elapsed(),
+                count("installed"),
+                count("extracted"),
+                count("duplicate"),
+                count("partial"),
+                count("old")
+            );
+            for i in items.iter().filter(|i| i["flags"].as_array().unwrap().iter().any(|x| x == "installed")).take(80) {
+                println!("   installer: {} -> {}", i["name"], i["installedAs"]);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn smoke_icons() {
     let p = block_on(crate::programs::programs_list()).unwrap();
     let v = serde_json::to_value(&p).unwrap();

@@ -285,3 +285,78 @@ export interface GpuPref {
 export interface UpdateCheck {
   available: boolean;
 }
+
+/* ---------- Downloads review ---------- */
+export type DownloadFlag = "installed" | "extracted" | "duplicate" | "partial" | "old";
+export type DownloadCategory =
+  | "installers"
+  | "archives"
+  | "images"
+  | "videos"
+  | "pictures"
+  | "audio"
+  | "documents"
+  | "torrents"
+  | "partial"
+  | "folders"
+  | "shortcuts"
+  | "other";
+
+export interface DownloadItem {
+  path: string;
+  name: string;
+  size: number;
+  isDir: boolean;
+  category: DownloadCategory;
+  ageDays: number;
+  flags: DownloadFlag[];
+  installedAs: string | null;
+}
+
+export interface DownloadsReport {
+  root: string;
+  total: number;
+  items: DownloadItem[];
+}
+
+/* ---------- Smart diagnostics ---------- */
+export type Severity = "critical" | "high" | "medium" | "low" | "info";
+export type DiagCategory = "performance" | "thermal" | "hardware" | "system" | "security";
+
+export interface DiagIssue {
+  code: string;
+  category: DiagCategory;
+  severity: Severity;
+  params: Record<string, string>;
+  details: string[];
+  fix: string | null;
+  fixArgs: string[];
+  open: string | null;
+}
+
+export interface DiagCheck {
+  code: string;
+  category: DiagCategory;
+  status: "ok" | "issue" | "skipped";
+}
+
+export interface DiagReport {
+  at: number;
+  durationMs: number;
+  score: number;
+  admin: boolean;
+  defenderScanned: boolean;
+  issues: DiagIssue[];
+  checks: DiagCheck[];
+}
+
+export interface DiagProgress {
+  step: "defender" | "system" | "performance" | "evaluate" | "done";
+  done: number;
+  total: number;
+}
+
+export interface FixResult {
+  ok: boolean;
+  note: string;
+}

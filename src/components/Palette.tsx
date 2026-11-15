@@ -39,6 +39,8 @@ export function Palette() {
     });
     const p = t.palette;
     const actions: Item[] = [
+      { id: "a:diag", group: "actions", label: p.aDiag, keywords: "diagnostics check health virus диагностика проверка здоровье вирусы перегрев ошибки", run: () => navigate("diagnostics") },
+      { id: "a:downloads", group: "actions", label: p.aDownloads, keywords: "downloads загрузки скачанные установщики архивы", run: () => navigate("disk", "downloads") },
       { id: "a:clean", group: "actions", label: p.aClean, keywords: "clean cleanup очистка мусор кэш temp", run: () => navigate("cleanup", null, "scan") },
       {
         id: "a:dns",

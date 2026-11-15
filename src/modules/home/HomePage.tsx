@@ -26,6 +26,7 @@ export function HomePage() {
   const prot = useAsync(() => cached("protection", 60_000, api.protection));
   const startup = useAsync(() => cached("startup", 60_000, api.startupList));
   const history = useAsync(api.history);
+  const diag = useAsync(() => api.diagLast().catch(() => null));
 
   const disk = snap ? pickSystemDisk(snap.disks) : null;
   const diskUsed = disk ? disk.total - disk.available : 0;
@@ -70,8 +71,16 @@ export function HomePage() {
     if (prot.data && prot.data.firewall.some((f) => !f.enabled))
       list.push({ id: "fw", text: t.home.tipFirewall, action: () => navigate("protection") });
     if (memPct >= 90) list.push({ id: "mem", text: fmt(t.home.tipMemory, { p: memPct }), action: () => navigate("system", "processes") });
+    // Diagnostics: suggest a first run, or remind about a report with problems.
+    if (!diag.loading) {
+      const r = diag.data;
+      const stale = !r || Date.now() / 1000 - r.at > 14 * 86400;
+      if (stale) list.push({ id: "diag", text: t.home.tipDiag, action: () => navigate("diagnostics") });
+      else if (r && r.issues.some((i) => i.severity === "critical" || i.severity === "high"))
+        list.push({ id: "diag", text: fmt(t.home.tipDiagScore, { score: r.score, n: r.issues.length }), action: () => navigate("diagnostics") });
+    }
     return list;
-  }, [startup.data, defender, prot.data, memPct, t, lang, navigate]);
+  }, [startup.data, defender, prot.data, memPct, t, lang, navigate, diag.loading, diag.data]);
 
   const formatPct = useCallback((v: number) => `${Math.round(v)}%`, []);
 

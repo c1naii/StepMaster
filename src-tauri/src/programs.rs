@@ -87,6 +87,23 @@ fn start_menu_shortcuts() -> Vec<(String, PathBuf)> {
     out
 }
 
+/// (name words, display name) of everything installed: registry programs + Start menu apps.
+pub fn installed_names() -> Vec<(Vec<String>, String)> {
+    let mut out: Vec<(Vec<String>, String)> = read_win32()
+        .into_iter()
+        .map(|e| (crate::downloads::words(&base_name(&e.info.name)), e.info.name))
+        .filter(|(w, _)| !w.is_empty())
+        .collect();
+    for (_, p) in start_menu_shortcuts() {
+        let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let w = crate::downloads::words(&name);
+        if !w.is_empty() {
+            out.push((w, name));
+        }
+    }
+    out
+}
+
 /// Generic "application" icon used when a program ships none at all.
 const GENERIC_ICON: &str = r"%SystemRoot%\System32\shell32.dll,2";
 

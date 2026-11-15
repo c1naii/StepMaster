@@ -1,6 +1,8 @@
 //! StepMaster backend. Each module = one section of the app (see src/modules in the UI).
 mod cleanup;
+mod diagnostics;
 mod disk;
+mod downloads;
 mod fsops;
 mod games;
 mod icons;
@@ -155,6 +157,11 @@ pub fn run() {
             disk::disk_cancel,
             disk::duplicates_scan,
             disk::fs_recycle,
+            downloads::downloads_scan,
+            // diagnostics
+            diagnostics::diag_run,
+            diagnostics::diag_last,
+            diagnostics::diag_fix,
             // startup, services, restore
             startup::startup_list,
             startup::startup_set,

@@ -26,6 +26,11 @@ pub fn parse_spec(spec: &str) -> Option<(PathBuf, i32)> {
     p.is_absolute().then_some((p, index))
 }
 
+/// Expands %VARS% (unknown ones are kept as-is).
+pub fn expand_env_pub(s: &str) -> String {
+    expand_env(s)
+}
+
 fn expand_env(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;

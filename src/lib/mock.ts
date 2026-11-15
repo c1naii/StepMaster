@@ -225,6 +225,69 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     ];
   },
   fs_recycle: (a) => ({ ok: (a.paths as string[]).length, failed: [] }),
+  downloads_scan: async (a) => {
+    await sleep(700);
+    if (mode() === "empty") return { root: "C:\\Users\\Step\\Downloads", total: 0, items: [] };
+    const base = a.place === "desktop" ? "C:\\Users\\Step\\Desktop" : "C:\\Users\\Step\\Downloads";
+    const mk = (name: string, size: number, category: string, ageDays: number, flags: string[], installedAs: string | null = null, isDir = false) => ({
+      path: `${base}\\${name}`,
+      name,
+      size,
+      isDir,
+      category,
+      ageDays,
+      flags,
+      installedAs,
+    });
+    const items = [
+      mk("Windows11.iso", 6.1 * GB, "images", 210, ["old"]),
+      mk("Cyberpunk2077.zip", 64.2 * GB, "archives", 30, ["extracted"]),
+      mk("Cyberpunk2077", 70.1 * GB, "folders", 30, [], null, true),
+      mk("DiscordSetup.exe", 110 * MB, "installers", 12, ["installed"], "Discord"),
+      mk("ChromeSetup.exe", 1.4 * MB, "installers", 400, ["installed", "old"], "Google Chrome"),
+      mk("movie.mkv", 2.1 * GB, "videos", 5, []),
+      mk("movie (1).mkv", 2.1 * GB, "videos", 4, ["duplicate"]),
+      mk("report.pdf", 3 * MB, "documents", 2, []),
+      mk("photo.jpg", 4 * MB, "pictures", 120, ["old"]),
+      mk("big_file.zip.crdownload", 900 * MB, "partial", 9, ["partial"]),
+      mk(mode() === "worst" ? LONG + ".exe" : "game_setup.exe", 2.3 * GB, "installers", 1, []),
+    ];
+    return { root: base, total: items.reduce((s, i) => s + i.size, 0), items };
+  },
+  diag_last: () => null,
+  diag_run: async (a) => {
+    const steps = a.defenderScan ? ["defender", "system", "performance", "evaluate"] : ["system", "performance", "evaluate"];
+    for (let i = 0; i < steps.length; i++) {
+      emit("diag://progress", { step: steps[i], done: i, total: steps.length });
+      await sleep(steps[i] === "defender" ? 1800 : 700);
+    }
+    emit("diag://progress", { step: "done", done: steps.length, total: steps.length });
+    if (mode() === "empty") {
+      return { at: Date.now() / 1000, durationMs: 2100, score: 100, admin: true, defenderScanned: Boolean(a.defenderScan), issues: [], checks: [{ code: "cpu_load", category: "performance", status: "ok" }] };
+    }
+    const issues = [
+      { code: "threats", category: "security", severity: "critical", params: { n: "1" }, details: ["Trojan:Win32/Wacatac.B!ml — C:\\Users\\Step\\Downloads\\free_game.exe"], fix: "remove_threats", fixArgs: [], open: "tool:defender" },
+      { code: "pua", category: "security", severity: "medium", params: { n: "1" }, details: ["PUA:Win32/Packunwan — C:\\Program Files\\Tool\\tool.exe"], fix: null, fixArgs: [], open: "tool:defender" },
+      { code: "disk_space", category: "performance", severity: "high", params: { drive: "C", free: "18.2", pct: "4" }, details: [], fix: "cleanup_safe", fixArgs: [], open: "nav:disk" },
+      { code: "firewall", category: "security", severity: "high", params: {}, details: ["Public"], fix: "enable_firewall", fixArgs: [], open: "nav:protection" },
+      { code: "startup_suspicious", category: "security", severity: "medium", params: { n: "1" }, details: ["updater — temp"], fix: "disable_startup", fixArgs: ["hkcu|updater"], open: "nav:system:startup" },
+      { code: "update_errors", category: "system", severity: "medium", params: { n: "43", last: "2026-11-12 15:06" }, details: [], fix: "repair_system", fixArgs: [], open: "tool:updates" },
+      { code: "shutdowns", category: "system", severity: "medium", params: { n: "3", last: "2026-11-07 20:46" }, details: [], fix: null, fixArgs: [], open: null },
+      { code: "startup", category: "performance", severity: "low", params: { n: "15" }, details: [], fix: null, fixArgs: [], open: "nav:system:startup" },
+      { code: "uptime", category: "performance", severity: "info", params: { days: "9" }, details: [], fix: null, fixArgs: [], open: null },
+    ];
+    const codes = ["cpu_load", "memory", "junk", "power_plan", "reboot_pending", "cpu_temp", "gpu_temp", "throttling", "disk_health", "devices", "hw_errors", "bsod", "disk_errors", "app_crashes", "wu_service", "uac", "defender_off", "signatures", "last_scan", "exclusions", "processes_suspicious", "tasks_suspicious", "hosts", "proxy"];
+    const cat = (c: string) => (["cpu_temp", "gpu_temp", "throttling"].includes(c) ? "thermal" : ["disk_health", "devices", "hw_errors"].includes(c) ? "hardware" : ["bsod", "disk_errors", "app_crashes", "wu_service", "uac"].includes(c) ? "system" : ["defender_off", "signatures", "last_scan", "exclusions", "processes_suspicious", "tasks_suspicious", "hosts", "proxy"].includes(c) ? "security" : "performance");
+    const checks = [
+      ...issues.map((i) => ({ code: i.code, category: i.category, status: "issue" })),
+      ...codes.map((c) => ({ code: c, category: cat(c), status: c === "cpu_temp" ? "skipped" : "ok" })),
+    ];
+    return { at: Date.now() / 1000, durationMs: 6400, score: 37, admin: mode() !== "worst", defenderScanned: Boolean(a.defenderScan), issues, checks };
+  },
+  diag_fix: async (a) => {
+    await sleep(a.fix === "repair_system" ? 2500 : 900);
+    return { ok: true, note: a.fix === "enable_uac" || a.fix === "repair_system" ? "reboot" : "" };
+  },
 
   startup_list: () => (mode() === "empty" ? [] : startup.map((s) => ({ ...s }))),
   startup_set: (a) => {

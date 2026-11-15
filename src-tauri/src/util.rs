@@ -74,8 +74,16 @@ pub fn run_hidden(program: &str, args: &[&str]) -> Res<(bool, String, String)> {
     ))
 }
 
-/// Console tools (ipconfig, netsh, powercfg) print in the OEM code page; decode safely.
+/// Console tools (ipconfig, netsh, powercfg) print in the OEM code page; sfc prints UTF-16.
 pub fn decode_console(bytes: &[u8]) -> String {
+    // UTF-16LE: lots of zero bytes in odd positions.
+    if bytes.len() >= 4 && bytes.len() % 2 == 0 {
+        let zeros = bytes.iter().skip(1).step_by(2).filter(|b| **b == 0).count();
+        if zeros * 2 >= bytes.len() / 2 {
+            let u: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            return String::from_utf16_lossy(&u).trim_start_matches('\u{feff}').to_string();
+        }
+    }
     if let Ok(s) = std::str::from_utf8(bytes) {
         return s.to_string();
     }
@@ -116,6 +124,16 @@ pub fn psq(s: &str) -> String {
 /// Run a PowerShell script (Windows PowerShell 5.1, always present on Win10/11).
 /// Errors thrown in the script come back as Err(message). Output is UTF-8.
 pub fn ps(script: &str) -> Res<String> {
+    ps_inner(script, None)
+}
+
+/// Like `ps`, but kills PowerShell if it runs longer than `secs` (a hung WMI/storage call
+/// must never freeze the app).
+pub fn ps_timeout(script: &str, secs: u64) -> Res<String> {
+    ps_inner(script, Some(std::time::Duration::from_secs(secs)))
+}
+
+fn ps_inner(script: &str, timeout: Option<std::time::Duration>) -> Res<String> {
     let full = format!(
         "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
          [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
@@ -123,11 +141,36 @@ pub fn ps(script: &str) -> Res<String> {
     );
     let utf16: Vec<u8> = full.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
     let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
-    let out = Command::new(sys_tool("powershell.exe"))
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &b64])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("PowerShell: {e}"))?;
+    let mut cmd = Command::new(sys_tool("powershell.exe"));
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &b64])
+        .creation_flags(CREATE_NO_WINDOW);
+    let out = match timeout {
+        None => cmd.output().map_err(|e| format!("PowerShell: {e}"))?,
+        Some(limit) => {
+            use std::process::Stdio;
+            let child = cmd
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("PowerShell: {e}"))?;
+            let pid = child.id();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(child.wait_with_output());
+            });
+            match rx.recv_timeout(limit) {
+                Ok(r) => r.map_err(|e| format!("PowerShell: {e}"))?,
+                Err(_) => {
+                    let _ = Command::new(sys_tool("taskkill.exe"))
+                        .args(["/PID", &pid.to_string(), "/T", "/F"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output();
+                    return Err(tr("Проверка заняла слишком много времени", "The check took too long"));
+                }
+            }
+        }
+    };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if let Some(i) = stdout.find("__SMERR__") {
         let msg = stdout[i + 9..].trim();
@@ -142,7 +185,15 @@ pub fn ps(script: &str) -> Res<String> {
 
 /// PowerShell returning JSON (script must output a single JSON value).
 pub fn ps_json<T: serde::de::DeserializeOwned>(script: &str) -> Res<T> {
-    let out = ps(script)?;
+    parse_ps_json(&ps(script)?)
+}
+
+pub fn ps_json_timeout<T: serde::de::DeserializeOwned>(script: &str, secs: u64) -> Res<T> {
+    parse_ps_json(&ps_timeout(script, secs)?)
+}
+
+fn parse_ps_json<T: serde::de::DeserializeOwned>(out: &str) -> Res<T> {
+    let out = out.to_string();
     let text = if out.is_empty() { "null" } else { out.as_str() };
     let parse_err = |e: serde_json::Error| format!("{}: {e}", tr("Не удалось разобрать ответ системы", "Couldn't parse system output"));
     let mut v: serde_json::Value = serde_json::from_str(text).map_err(parse_err)?;

@@ -1,6 +1,9 @@
 // Typed bridge to the Rust backend. In a plain browser (dev/testing) it falls back to mock data.
 import type {
   AppInfo,
+  DiagReport,
+  DownloadsReport,
+  FixResult,
   CleanupCategory,
   CleanupHistory,
   CleanupId,
@@ -94,6 +97,12 @@ export const api = {
   diskCancel: () => call<void>("disk_cancel"),
   duplicatesScan: (path: string) => call<DuplicateGroup[]>("duplicates_scan", { path }),
   recycle: (paths: string[]) => call<RecycleResult>("fs_recycle", { paths }),
+  downloadsScan: (place: "downloads" | "desktop") => call<DownloadsReport>("downloads_scan", { place }),
+
+  // diagnostics
+  diagRun: (defenderScan: boolean) => call<DiagReport>("diag_run", { defenderScan }),
+  diagLast: () => call<DiagReport | null>("diag_last"),
+  diagFix: (fix: string, args: string[]) => call<FixResult>("diag_fix", { fix, args }),
 
   // system tools
   startupList: () => call<StartupItem[]>("startup_list"),

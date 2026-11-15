@@ -27,6 +27,13 @@
   --danger: #ef8a8a;
   --ok: #f2f2f3;
 
+  /* Diagnostics severity (soft tones that sit well on the monochrome UI) */
+  --sev-critical: #ef8a8a;
+  --sev-high: #eda46f;
+  --sev-medium: #e6c27a;
+  --sev-low: #a1a1a8;
+  --sev-info: #6b6b72;
+
   /* Radius */
   --r-sm: 8px;
   --r-md: 12px;

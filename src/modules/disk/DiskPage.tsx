@@ -8,8 +8,9 @@ import { baseName, formatBytes, parentPath, pct } from "../../lib/format";
 import { usePoll } from "../../lib/hooks";
 import { ask, useStore } from "../../lib/store";
 import type { DiskEntry, DiskFolder, DuplicateGroup, ScanProgress } from "../../lib/types";
+import { Downloads } from "./Downloads";
 
-type Tab = "analyze" | "large" | "dupes";
+type Tab = "analyze" | "downloads" | "large" | "dupes";
 
 async function confirmRecycle(paths: string[], t: ReturnType<typeof useT>, lang: "ru" | "en"): Promise<boolean> {
   return ask({
@@ -361,7 +362,7 @@ export function DiskPage() {
   const t = useT();
   const [tab, setTab] = useState<Tab>(() => {
     const p = useStore.getState().takePendingTab();
-    return p === "large" || p === "dupes" ? p : "analyze";
+    return p === "large" || p === "dupes" || p === "downloads" ? p : "analyze";
   });
   const [scanVersion, setScanVersion] = useState(0);
 
@@ -373,6 +374,7 @@ export function DiskPage() {
         onChange={setTab}
         items={[
           { id: "analyze", label: t.disk.tabAnalyze },
+          { id: "downloads", label: t.disk.tabDownloads },
           { id: "large", label: t.disk.tabLarge },
           { id: "dupes", label: t.disk.tabDupes },
         ]}
@@ -381,6 +383,7 @@ export function DiskPage() {
       <div style={{ display: tab === "analyze" ? "contents" : "none" }}>
         <Analyze onScanned={() => setScanVersion((v) => v + 1)} />
       </div>
+      {tab === "downloads" ? <Downloads /> : null}
       {tab === "large" ? <LargeFiles version={scanVersion} /> : null}
       {tab === "dupes" ? <Duplicates /> : null}
     </>

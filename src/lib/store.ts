@@ -3,6 +3,7 @@ import type { AppInfo, Settings } from "./types";
 
 export type ModuleId =
   | "home"
+  | "diagnostics"
   | "cleanup"
   | "disk"
   | "programs"

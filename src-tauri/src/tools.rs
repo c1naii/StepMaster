@@ -20,6 +20,7 @@ pub fn open_tool(tool: String) -> Res<()> {
         "firewall" => ("wf.msc", None),
         "defender" => ("windowsdefender:", None),
         "updates" => ("ms-settings:windowsupdate", None),
+        "taskschd" => ("taskschd.msc", None),
         _ => return Err(tr("Неизвестный инструмент", "Unknown tool")),
     };
     util::shell_open(target, params, "open")

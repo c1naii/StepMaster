@@ -80,12 +80,12 @@ fn is_enabled(src: Src, name: &str) -> bool {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupItem {
-    id: String,
-    name: String,
-    command: String,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) command: String,
     location: String,
-    enabled: bool,
-    exe_path: Option<String>,
+    pub(crate) enabled: bool,
+    pub(crate) exe_path: Option<String>,
 }
 
 fn read_run(hive: HKEY, path: &str, src: Src, out: &mut Vec<StartupItem>) {
@@ -155,6 +155,10 @@ pub fn read_all() -> Vec<StartupItem> {
 
 #[tauri::command]
 pub fn startup_set(id: String, enabled: bool) -> Res<()> {
+    set_enabled(&id, enabled)
+}
+
+pub fn set_enabled(id: &str, enabled: bool) -> Res<()> {
     let (tag, name) = id.split_once('|').ok_or_else(|| tr("Неверный элемент", "Invalid item"))?;
     let src = Src::from_tag(tag).ok_or_else(|| tr("Неверный элемент", "Invalid item"))?;
     if name.is_empty() || name.len() > 512 {
