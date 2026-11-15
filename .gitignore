@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+src-tauri/target/
+src-tauri/gen/
+/StepMaster.exe
+/stepmaster.exe
+*.key
+*.log
+.playwright-mcp/

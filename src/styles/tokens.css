@@ -1,0 +1,67 @@
+/* StepMaster design tokens — dark monochrome. Change values here, not in components. */
+:root {
+  /* Surfaces */
+  --bg: #0b0b0c;
+  --bg-sidebar: #0d0d0e;
+  --panel: #131315;
+  --panel-hover: #18181b;
+  --panel-raised: #1c1c1f;
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  /* Lines */
+  --border: #222225;
+  --border-strong: #2e2e32;
+  --divider: #1d1d20;
+
+  /* Text */
+  --text: #f2f2f3;
+  --text-2: #a1a1a8;
+  --text-3: #6b6b72;
+  --text-inverse: #0b0b0c;
+
+  /* Accent is white (monochrome). Status uses gray scale + one soft warning tone. */
+  --accent: #f2f2f3;
+  --accent-hover: #ffffff;
+  --track: #2a2a2e;
+  --warn: #e6c27a;
+  --danger: #ef8a8a;
+  --ok: #f2f2f3;
+
+  /* Radius */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  /* Spacing (8px grid) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* Type */
+  --font: "Manrope Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+  --fs-3xl: 40px;
+  --fs-hero: 76px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 140ms;
+  --dur-fast: 160ms;
+  --dur-base: 220ms;
+
+  /* Layout */
+  --sidebar-w: 232px;
+  --titlebar-h: 56px;
+}
