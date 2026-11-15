@@ -3,17 +3,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useT } from "../i18n";
 import { useStore, type ModuleId } from "../lib/store";
 import { MODULES } from "../modules/registry";
-import { useCalm } from "./ui";
+import { rubberband, useCalm } from "./ui";
 
 /** Movement (px) before a press turns into a drag; a plain click stays a click. */
 const DRAG_THRESHOLD = 5;
 /** Holding still this long also "lifts" the lens, like a long-press. */
 const HOLD_MS = 180;
 
-/** Soft resistance past the first/last item instead of a hard stop. */
-function rubberband(overshoot: number, dimension: number, k = 0.55) {
-  return (overshoot * dimension * k) / (dimension + k * Math.abs(overshoot));
-}
 
 /**
  * Sidebar with a single "liquid glass" indicator.

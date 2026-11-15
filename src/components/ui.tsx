@@ -1,6 +1,6 @@
-import { animate, motion, useReducedMotion } from "motion/react";
+import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform, useVelocity } from "motion/react";
 import { AlertCircle, Check, Loader2, Search } from "lucide-react";
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { errorText } from "../lib/api";
 import { clamp } from "../lib/format";
@@ -66,6 +66,17 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
   );
 }
 
+/** Soft resistance past an edge instead of a hard stop (Apple's rubber-band curve). */
+export function rubberband(overshoot: number, dimension: number, k = 0.55) {
+  return (overshoot * dimension * k) / (dimension + k * Math.abs(overshoot));
+}
+
+/**
+ * Segmented tabs with a "liquid glass" indicator, same feel as the sidebar.
+ * Click: the indicator glides to the tab. Press and drag sideways (or hold, then drag):
+ * it lifts into a glass lens that follows the pointer, stretches with speed and morphs to the
+ * width of the tab under it. Release: that tab is selected. Used for every tab bar in the app.
+ */
 export function Tabs<T extends string>({
   value,
   onChange,
@@ -75,28 +86,172 @@ export function Tabs<T extends string>({
   onChange: (v: T) => void;
   items: { id: T; label: string }[];
 }) {
-  const id = useId();
   const calm = useCalm();
+  const listRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [lifted, setLifted] = useState(false);
+  const [hover, setHover] = useState<number | null>(null);
+  const suppressClick = useRef(false);
+  const press = useRef<{ id: number; startX: number; grab: number; index: number; dragging: boolean; timer: number } | null>(null);
+
+  const spring = calm ? { stiffness: 2000, damping: 200 } : { stiffness: 560, damping: 44, mass: 0.85 };
+  const targetX = useMotionValue(0);
+  const targetW = useMotionValue(0);
+  const x = useSpring(targetX, spring);
+  const w = useSpring(targetW, spring);
+  const vel = useVelocity(x);
+  const stretchX = useTransform(vel, [-2000, 0, 2000], calm ? [1, 1, 1] : [1.1, 1, 1.1]);
+  const stretchY = useTransform(vel, [-2000, 0, 2000], calm ? [1, 1, 1] : [0.94, 1, 0.94]);
+  const lift = useSpring(1, { stiffness: 600, damping: 32 });
+  const scaleX = useTransform([lift, stretchX], ([l, s]: number[]) => l * s);
+  const scaleY = useTransform([lift, stretchY], ([l, s]: number[]) => l * s);
+
+  const activeIndex = Math.max(0, items.findIndex((it) => it.id === value));
+  const leftOf = (i: number) => tabRefs.current[i]?.offsetLeft ?? 0;
+  const widthOf = (i: number) => tabRefs.current[i]?.offsetWidth ?? 0;
+
+  // Place on mount, follow the selected tab, and re-measure when labels change size (language switch).
+  const placed = useRef(false);
+  useLayoutEffect(() => {
+    const place = (animateIt: boolean) => {
+      if (press.current?.dragging) return;
+      const l = leftOf(activeIndex);
+      const wd = widthOf(activeIndex);
+      if (!animateIt) {
+        targetX.jump(l);
+        x.jump(l);
+        targetW.jump(wd);
+        w.jump(wd);
+      } else {
+        targetX.set(l);
+        targetW.set(wd);
+      }
+    };
+    place(placed.current);
+    placed.current = true;
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => place(false));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, items.map((i) => i.label).join("|")]);
+
+  useEffect(() => {
+    lift.set(lifted && !calm ? 1.06 : 1);
+  }, [lifted, calm, lift]);
+
+  const pointerX = (e: React.PointerEvent) => e.clientX - (listRef.current?.getBoundingClientRect().left ?? 0);
+
+  const indexAt = (center: number) => {
+    let best = 0;
+    let dist = Infinity;
+    tabRefs.current.forEach((el, i) => {
+      if (!el) return;
+      const d = Math.abs(el.offsetLeft + el.offsetWidth / 2 - center);
+      if (d < dist) {
+        dist = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+
+  const lifting = (p: NonNullable<typeof press.current>, pointerId?: number) => {
+    p.dragging = true;
+    window.clearTimeout(p.timer);
+    try {
+      if (pointerId !== undefined) listRef.current?.setPointerCapture(pointerId);
+    } catch {
+      /* pointer no longer active */
+    }
+    setLifted(true);
+    setHover(p.index);
+  };
+
+  const onPointerDown = (e: React.PointerEvent, index: number) => {
+    if (e.button !== 0) return;
+    suppressClick.current = false;
+    const p = { id: e.pointerId, startX: e.clientX, grab: pointerX(e) - leftOf(index), index, dragging: false, timer: 0 };
+    press.current = p;
+    p.timer = window.setTimeout(() => {
+      if (press.current === p && !p.dragging) lifting(p, p.id);
+    }, 180);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const p = press.current;
+    if (!p) return;
+    if (!p.dragging) {
+      if (Math.abs(e.clientX - p.startX) < 5) return;
+      lifting(p, e.pointerId);
+    }
+    const n = items.length - 1;
+    const minX = leftOf(0);
+    const maxX = leftOf(n) + widthOf(n);
+    const curW = targetW.get() || widthOf(p.index);
+    let next = pointerX(e) - p.grab;
+    if (next < minX) next = minX + rubberband(next - minX, curW);
+    if (next + curW > maxX) next = maxX - curW + rubberband(next + curW - maxX, curW);
+    const over = indexAt(next + curW / 2);
+    setHover(over);
+    targetX.set(next);
+    targetW.set(widthOf(over)); // the lens morphs to the width of the tab under it
+  };
+
+  const finish = (commit: boolean) => {
+    const p = press.current;
+    press.current = null;
+    if (!p) return;
+    window.clearTimeout(p.timer);
+    if (!p.dragging) return; // plain click: handled by onClick
+    suppressClick.current = true;
+    window.setTimeout(() => {
+      suppressClick.current = false;
+    }, 0);
+    const target = commit ? indexAt(targetX.get() + (targetW.get() || 0) / 2) : activeIndex;
+    setLifted(false);
+    setHover(null);
+    targetX.set(leftOf(target));
+    targetW.set(widthOf(target));
+    if (commit && items[target] && items[target].id !== value) onChange(items[target].id);
+  };
+
   return (
-    <div className="tabs" role="tablist">
-      {items.map((it) => (
-        <button
-          key={it.id}
-          role="tab"
-          aria-selected={value === it.id}
-          className={`tab ${value === it.id ? "active" : ""}`}
-          onClick={() => onChange(it.id)}
-        >
-          {value === it.id ? (
-            <motion.div
-              layoutId={`tab-pill-${id}`}
-              className="tab-pill"
-              transition={calm ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0.12 }}
-            />
-          ) : null}
-          <span>{it.label}</span>
-        </button>
-      ))}
+    <div
+      ref={listRef}
+      className={`tabs ${lifted ? "lifted" : ""}`}
+      role="tablist"
+      onPointerMove={onPointerMove}
+      onPointerUp={() => finish(true)}
+      onPointerCancel={() => finish(false)}
+      onLostPointerCapture={() => press.current?.dragging && finish(true)}
+    >
+      <motion.div className={`tab-glass ${lifted ? "is-lifted" : ""}`} aria-hidden style={{ x, width: w, scaleX, scaleY }} />
+      {items.map((it, i) => {
+        const shown = lifted ? hover === i : value === it.id;
+        return (
+          <button
+            key={it.id}
+            ref={(el) => {
+              tabRefs.current[i] = el;
+            }}
+            role="tab"
+            aria-selected={value === it.id}
+            className={`tab ${shown ? "active" : ""}`}
+            onPointerDown={(e) => onPointerDown(e, i)}
+            onClick={() => {
+              if (suppressClick.current) {
+                suppressClick.current = false;
+                return;
+              }
+              onChange(it.id);
+            }}
+          >
+            <span>{it.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
