@@ -10,6 +10,8 @@ use winreg::RegKey;
 
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\StepMaster";
 const EXE_NAME: &str = "StepMaster.exe";
+/// Shown as the developer in "Apps & features" (and as the company in the exe properties via tauri.conf.json).
+const PUBLISHER: &str = "Cinailo Corp.";
 const TASK_NAME: &str = "StepMaster";
 
 fn norm(p: &Path) -> String {
@@ -173,7 +175,7 @@ pub async fn install_run(app: AppHandle, dir: String, desktop: bool, start_menu:
         let set = |n: &str, v: &str| k.set_value(n, &v.to_string()).map_err(|e| e.to_string());
         set("DisplayName", "StepMaster")?;
         set("DisplayVersion", env!("CARGO_PKG_VERSION"))?;
-        set("Publisher", "StepMaster")?;
+        set("Publisher", PUBLISHER)?;
         set("InstallLocation", &target_dir.to_string_lossy())?;
         set("DisplayIcon", &format!("{exe_s},0"))?;
         set("UninstallString", &format!("\"{exe_s}\" --uninstall"))?;
@@ -222,11 +224,20 @@ pub async fn uninstall_run(app: AppHandle, remove_data: bool) -> Res<()> {
             let _ = std::fs::remove_file(d.join("StepMaster.lnk"));
         }
         let _ = RegKey::predef(HKEY_LOCAL_MACHINE).delete_subkey_with_flags(UNINSTALL_KEY, KEY_WOW64_64KEY);
+        let data_dir = data_dir.filter(|d| remove_data && is_our_data_dir(d));
+        // Settings, history, diagnostics go right now; only WebView's own files stay busy.
+        if let Some(d) = &data_dir {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
         // The running exe (and WebView files in the data folder) can't be deleted while we run:
-        // a hidden cmd finishes the job a moment after we exit.
+        // a hidden cmd finishes the job after we exit.
         use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new(util::sys_tool("cmd.exe"))
-            .raw_arg(cleanup_command(&install_dir, if remove_data { data_dir.as_deref() } else { None }))
+            .raw_arg(cleanup_command(&install_dir, data_dir.as_deref()))
             .creation_flags(util::CREATE_NO_WINDOW)
             .spawn();
         Ok(())
@@ -249,19 +260,26 @@ fn cleanup_command(install_dir: &Path, data_dir: Option<&Path>) -> String {
         .join(" ");
     let mut cmd = format!("/C ping 127.0.0.1 -n 3 >nul & del /f /q {files} & rmdir {}", q(install_dir));
     // The data folder is entirely ours (named after the app id), so it may go recursively.
-    if let Some(d) = data_dir.filter(|d| norm(d).ends_with(r"\com.stepmaster.app") && !is_protected_path(d)) {
-        cmd.push_str(&format!(" & rmdir /s /q {}", q(d)));
+    // WebView2 helper processes can hold its files a few seconds longer: retry for ~20 s.
+    if let Some(d) = data_dir.filter(|d| is_our_data_dir(d)) {
+        let d = q(d);
+        cmd.push_str(&format!(" & for /L %i in (1,1,10) do @if exist {d} (rmdir /s /q {d} 2>nul & ping 127.0.0.1 -n 3 >nul)"));
     }
     cmd
 }
 
-/// After a self-update the installed copy refreshes its version in "Apps & features".
+fn is_our_data_dir(d: &Path) -> bool {
+    norm(d).ends_with(r"\com.stepmaster.app") && !is_protected_path(d)
+}
+
+/// After a self-update the installed copy refreshes its version and developer in "Apps & features".
 pub fn refresh_registered_version() {
     if mode() != "normal" || installed_dir().is_none() {
         return;
     }
     if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(UNINSTALL_KEY, KEY_READ | KEY_WRITE | KEY_WOW64_64KEY) {
         let _ = k.set_value("DisplayVersion", &env!("CARGO_PKG_VERSION").to_string());
+        let _ = k.set_value("Publisher", &PUBLISHER.to_string());
     }
 }
 
@@ -293,9 +311,43 @@ mod tests {
         assert!(c.contains(r#"rmdir "D:\Projects\StepMaster""#));
         assert!(!c.contains("/s"));
         let data = Path::new(r"C:\Users\x\AppData\Local\com.stepmaster.app");
-        assert!(cleanup_command(Path::new(r"C:\Program Files\StepMaster"), Some(data)).ends_with(r#"rmdir /s /q "C:\Users\x\AppData\Local\com.stepmaster.app""#));
+        assert!(cleanup_command(Path::new(r"C:\Program Files\StepMaster"), Some(data)).contains(r#"rmdir /s /q "C:\Users\x\AppData\Local\com.stepmaster.app""#));
         // Anything that isn't our data folder is never removed recursively.
         assert!(!cleanup_command(Path::new(r"C:\Program Files\StepMaster"), Some(Path::new(r"C:\Users\x"))).contains("/s"));
+    }
+
+    /// Runs the real cleanup command on temp folders while a WebView-like file stays locked for a while.
+    /// `cargo test --lib cleanup_command_runs -- --ignored`
+    #[test]
+    #[ignore]
+    fn cleanup_command_runs() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::process::CommandExt;
+        let root = std::env::temp_dir().join(format!("sm-uninstall-test-{}", std::process::id()));
+        let inst = root.join("StepMaster");
+        let data = root.join("com.stepmaster.app");
+        let keep = root.join("Keep").join("StepMaster");
+        std::fs::create_dir_all(data.join(r"EBWebView\Default")).unwrap();
+        std::fs::create_dir_all(&inst).unwrap();
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(inst.join(EXE_NAME), b"x").unwrap();
+        std::fs::write(inst.join("StepMaster.exe.old"), b"x").unwrap();
+        std::fs::write(keep.join(EXE_NAME), b"x").unwrap();
+        std::fs::write(keep.join("my-notes.txt"), b"x").unwrap();
+        std::fs::write(data.join("settings.json"), b"x").unwrap();
+        std::fs::write(data.join(r"EBWebView\Default\lock.db"), b"x").unwrap();
+        // Hold the file without share-delete, like a WebView2 helper still running.
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(data.join(r"EBWebView\Default\lock.db")).unwrap();
+        let mut a = std::process::Command::new(util::sys_tool("cmd.exe")).raw_arg(cleanup_command(&inst, Some(&data))).spawn().unwrap();
+        let mut b = std::process::Command::new(util::sys_tool("cmd.exe")).raw_arg(cleanup_command(&keep, None)).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        drop(locked);
+        a.wait().unwrap();
+        b.wait().unwrap();
+        assert!(!inst.exists(), "install folder removed");
+        assert!(!data.exists(), "data folder removed after the lock was released");
+        assert!(keep.join("my-notes.txt").exists() && !keep.join(EXE_NAME).exists(), "foreign files kept");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
