@@ -31,6 +31,7 @@ import type {
   SystemSnapshot,
   UninstallResult,
   UpdateCheck,
+  InstallState,
   WifiProfile,
 } from "./types";
 import { mock } from "./mock";
@@ -80,6 +81,9 @@ export const api = {
   icons: (specs: string[]) => call<Record<string, string | null>>("icons_get", { specs }),
   showWindow: () => call<void>("show_main_window"),
   quit: () => call<void>("quit_app"),
+  installState: () => call<InstallState>("install_state"),
+  installRun: (dir: string, desktop: boolean, startMenu: boolean) => call<void>("install_run", { dir, desktop, startMenu }),
+  uninstallRun: (removeData: boolean) => call<void>("uninstall_run", { removeData }),
 
   // system
   snapshot: () => call<SystemSnapshot>("system_snapshot"),

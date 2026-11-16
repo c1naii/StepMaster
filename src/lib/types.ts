@@ -13,6 +13,13 @@ export interface Settings {
   trayMonitor: boolean;
 }
 
+export interface InstallState {
+  /** "setup" = not installed here, "uninstall" = started by Windows to remove it, "normal" = usual app. */
+  mode: "setup" | "uninstall" | "normal";
+  defaultDir: string;
+  alreadyInstalled: string | null;
+}
+
 export interface AppInfo {
   version: string;
   isAdmin: boolean;

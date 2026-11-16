@@ -63,7 +63,11 @@ pub fn open_app_dir() -> Res<()> {
 #[tauri::command]
 pub fn relaunch_as_admin(app: AppHandle) -> Res<()> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let args = format!("--wait-pid={}", std::process::id());
+    let mut args = format!("--wait-pid={}", std::process::id());
+    // Keep the uninstall screen when it asks for admin rights.
+    if std::env::args().any(|a| a == "--uninstall") {
+        args.push_str(" --uninstall");
+    }
     util::shell_open(&exe.to_string_lossy(), Some(&args), "runas")
         .map_err(|_| tr("Запуск от администратора отменён", "Elevation was cancelled"))?;
     app.exit(0);

@@ -1,14 +1,16 @@
 import { motion } from "motion/react";
 import { ShieldAlert } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Toaster } from "sonner";
 import { ConfirmDialog, UpdateModal } from "./components/Dialogs";
+import { InstallerScreen } from "./components/Installer";
 import { Palette } from "./components/Palette";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { notify, useCalm } from "./components/ui";
 import { useT } from "./i18n";
 import { api, on } from "./lib/api";
+import type { InstallState } from "./lib/types";
 import { useStore, type ModuleId } from "./lib/store";
 import { MODULES } from "./modules/registry";
 
@@ -32,15 +34,18 @@ export default function App() {
   const motionSetting = useStore((s) => s.settings.motion);
   const setPalette = useStore((s) => s.setPalette);
   const calm = useCalm();
+  // null until known; setup / uninstall replace the whole app with the installer screen.
+  const [install, setInstall] = useState<InstallState | null>(null);
 
-  // Boot: settings + app info, then reveal the window.
+  // Boot: settings + app info + install mode, then reveal the window.
   useEffect(() => {
     const st = useStore.getState();
-    Promise.allSettled([api.settingsGet(), api.appInfo()]).then(([s, a]) => {
+    Promise.allSettled([api.settingsGet(), api.appInfo(), api.installState()]).then(([s, a, i]) => {
       if (s.status === "fulfilled") st.setSettings(s.value);
       else notify.err(s.reason);
       if (a.status === "fulfilled") st.setApp(a.value);
       else notify.err(a.reason);
+      setInstall(i.status === "fulfilled" ? i.value : { mode: "normal", defaultDir: "", alreadyInstalled: null });
       requestAnimationFrame(() => void api.showWindow().catch(() => undefined));
     });
   }, []);
@@ -87,6 +92,16 @@ export default function App() {
   }, []);
 
   const Current = MODULES.find((m) => m.id === route)?.component ?? MODULES[0].component;
+
+  if (!install) return null;
+  if (install.mode !== "normal") {
+    return (
+      <>
+        <InstallerScreen state={install} />
+        <Toaster theme="dark" position="bottom-right" offset={20} toastOptions={{ className: "sm-toast", duration: 3500 }} />
+      </>
+    );
+  }
 
   return (
     <>

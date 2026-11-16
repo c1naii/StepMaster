@@ -1272,3 +1272,121 @@ html[data-motion="off"] *::after {
 html[data-motion="off"] .spin {
   animation-duration: 0.8s !important;
 }
+
+/* ---------- Installer (setup / uninstall window) ---------- */
+.installer {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.installer-bar {
+  height: var(--titlebar-h);
+  display: flex;
+  flex-shrink: 0;
+}
+
+.installer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 48px 40px;
+}
+
+.installer-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 24px 0 32px;
+}
+
+.installer-form {
+  display: grid;
+  gap: 12px;
+}
+
+.installer-label {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.installer-path {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 8px 0 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  margin-bottom: 8px;
+}
+
+.installer-path-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installer-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text-2);
+  padding: 4px 0;
+}
+
+.installer-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.installer-steps li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-3);
+  transition: color var(--dur-fast) ease;
+}
+
+.installer-steps li[data-state="active"],
+.installer-steps li[data-state="done"] {
+  color: var(--text);
+}
+
+.installer-step-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.installer-steps li[data-state="done"] .installer-step-icon {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+}
+
+.installer-steps li[data-state="active"] .installer-step-icon {
+  border-color: transparent;
+}
+
+.installer-actions {
+  margin-top: auto;
+  padding-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}

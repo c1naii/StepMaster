@@ -2,6 +2,7 @@
 // Mode is chosen by localStorage "sm-mock": "normal" (default) | "worst" | "empty" | "error".
 import type {
   AppInfo,
+  InstallState,
   CleanupCategory,
   GameModeStatus,
   ProgramInfo,
@@ -129,6 +130,27 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     return Object.fromEntries((a.specs as string[]).map((s, i) => [s, s.endsWith(".none") ? null : svg(colors[(s.length + i) % colors.length])]));
   },
   quit_app: () => undefined,
+  // Installer screen in the browser: localStorage.setItem('sm-install', 'setup' | 'uninstall')
+  install_state: (): InstallState => {
+    let m: InstallState["mode"] = "normal";
+    try {
+      const v = localStorage.getItem("sm-install");
+      if (v === "setup" || v === "uninstall") m = v;
+    } catch {
+      /* storage unavailable */
+    }
+    return { mode: m, defaultDir: "C:\\Program Files\\StepMaster", alreadyInstalled: null };
+  },
+  install_run: async () => {
+    for (const step of ["copy", "register", "shortcuts", "launch"]) {
+      emit("install://progress", { step });
+      await sleep(600);
+    }
+    if (mode() === "worst") throw "Отказано в доступе (тест)";
+  },
+  uninstall_run: async () => {
+    await sleep(1200);
+  },
 
   system_snapshot: () => {
     const m = mode();

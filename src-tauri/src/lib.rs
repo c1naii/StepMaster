@@ -6,6 +6,7 @@ mod downloads;
 mod fsops;
 mod games;
 mod icons;
+mod installer;
 mod network;
 mod programs;
 mod protection;
@@ -45,11 +46,16 @@ pub use tools::wait_for_pid;
 pub fn run() {
     let autostart_launch = std::env::args().any(|a| a == "--autostart");
 
-    tauri::Builder::default()
+    let normal = installer::mode() == "normal";
+    let mut builder = tauri::Builder::default();
+    if normal {
         // Must be first: a second launch just focuses the running window.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // Setup / uninstall run alongside an installed copy, so they skip the guard.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tools::show_main(app);
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -89,21 +95,34 @@ pub fn run() {
                 ui_ready: AtomicBool::new(false),
             });
 
-            if let Err(e) = tray::create(&handle) {
-                eprintln!("tray: {e}");
-            }
-            if let Err(e) = settings::apply_hotkey(&handle, &hotkey) {
-                eprintln!("hotkey: {e}");
-            }
-
-            // Background housekeeping: remove the old exe after an update, keep the
-            // autostart task pointing at the current exe location.
-            std::thread::spawn(move || {
-                updater::cleanup_old();
-                if autostart && util::is_admin() {
-                    let _ = settings::apply_autostart(true);
+            // The setup / uninstall screen is a small plain window: no tray, hotkey or autostart work.
+            if !normal {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_min_size(None::<tauri::Size>);
+                    let _ = w.set_size(tauri::LogicalSize::new(600.0, 680.0));
+                    let _ = w.set_resizable(false);
+                    let _ = w.set_maximizable(false);
+                    let _ = w.center();
                 }
-            });
+                // A portable copy that just self-updated lands here: drop its old exe.
+                std::thread::spawn(updater::cleanup_old);
+            } else {
+                if let Err(e) = tray::create(&handle) {
+                    eprintln!("tray: {e}");
+                }
+                if let Err(e) = settings::apply_hotkey(&handle, &hotkey) {
+                    eprintln!("hotkey: {e}");
+                }
+                // Background housekeeping: remove the old exe after an update, keep the
+                // autostart task pointing at the current exe and the installed version current.
+                std::thread::spawn(move || {
+                    updater::cleanup_old();
+                    installer::refresh_registered_version();
+                    if autostart && util::is_admin() {
+                        let _ = settings::apply_autostart(true);
+                    }
+                });
+            }
 
             // Safety net: show the window even if the UI never reports ready.
             let h2 = handle.clone();
@@ -119,7 +138,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
-                let to_tray = app.state::<AppState>().settings.read().close_to_tray;
+                let to_tray = installer::mode() == "normal" && app.state::<AppState>().settings.read().close_to_tray;
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
@@ -141,6 +160,9 @@ pub fn run() {
             updater::update_check,
             updater::update_install,
             icons::icons_get,
+            installer::install_state,
+            installer::install_run,
+            installer::uninstall_run,
             // system
             system::system_snapshot,
             system::system_overview,

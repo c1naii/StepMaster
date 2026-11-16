@@ -2,7 +2,7 @@
 
 <h1 align="center">StepMaster</h1>
 
-<p align="center">Все важные инструменты Windows в одной программе. Тёмный минималистичный интерфейс, один файл, без установки.</p>
+<p align="center">Все важные инструменты Windows в одной программе. Тёмный минималистичный интерфейс, один файл со встроенной установкой.</p>
 
 <p align="center"><img src="assets/reference.webp" width="820" alt="Интерфейс StepMaster"></p>
 
