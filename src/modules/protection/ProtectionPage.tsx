@@ -1,6 +1,6 @@
 import { BrickWall, Download, ExternalLink, RefreshCcw, ScanSearch, Shield } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Bar, ErrorState, PageHeader, Skeleton, Spinner, notify } from "../../components/ui";
+import { Bar, ErrorState, PageHeader, Skeleton, Spinner, notify, StopButton } from "../../components/ui";
 import { fmt, useT } from "../../i18n";
 import { api } from "../../lib/api";
 import { cached, invalidate } from "../../lib/cache";
@@ -9,6 +9,7 @@ import { ask, useStore } from "../../lib/store";
 
 // Quick scan can outlive the page; keep its state at module level so returning shows progress.
 let scanRunning = false;
+let scanStopRequested = false;
 const scanListeners = new Set<(v: boolean) => void>();
 function setScanRunning(v: boolean) {
   scanRunning = v;
@@ -21,12 +22,17 @@ export function ProtectionPage() {
   const fixes = useAsync(api.hotfixes);
   const [scanning, setScanning] = useState(scanRunning);
   const [busy, setBusy] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(scanStopRequested);
   const autoStarted = useRef(false);
   const isAdmin = useStore((s) => s.app?.isAdmin ?? true);
 
   useEffect(() => {
-    scanListeners.add(setScanning);
-    return () => void scanListeners.delete(setScanning);
+    const onScan = (v: boolean) => {
+      setScanning(v);
+      if (!v) setStopping(false);
+    };
+    scanListeners.add(onScan);
+    return () => void scanListeners.delete(onScan);
   }, []);
 
   const reload = () => {
@@ -43,8 +49,11 @@ export function ProtectionPage() {
       notify.ok(t.protection.scanDone);
       invalidate("protection");
     } catch (e) {
-      notify.err(e);
+      if (scanStopRequested) notify.info(t.common.stopped);
+      else notify.err(e);
     } finally {
+      scanStopRequested = false;
+      setStopping(false);
       setScanRunning(false);
     }
   };
@@ -145,7 +154,18 @@ export function ProtectionPage() {
 
         {scanning ? (
           <div style={{ display: "grid", gap: 10 }}>
-            <div className="small muted">{t.protection.scanning}</div>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="small muted">{t.protection.scanning}</div>
+              <StopButton
+                small
+                stopping={stopping}
+                onClick={() => {
+                  scanStopRequested = true;
+                  setStopping(true);
+                  api.opCancel("defender").catch(notify.err);
+                }}
+              />
+            </div>
             <Bar value={0} thin indeterminate />
           </div>
         ) : null}

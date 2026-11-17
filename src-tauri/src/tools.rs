@@ -6,24 +6,45 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, State};
 
+/// Official download pages for programs that winget doesn't have. Only these can be opened.
+const SITES: [&str; 4] = [
+    "https://www.nvidia.com/ru-ru/software/nvidia-app/",
+    "https://www.amd.com/ru/support/download/drivers.html",
+    "https://www.whatsapp.com/download",
+    "https://www.spotify.com/download/windows/",
+];
+
+#[tauri::command]
+pub fn open_site(url: String) -> Res<()> {
+    if !SITES.contains(&url.as_str()) {
+        return Err(tr("Неизвестный сайт", "Unknown site"));
+    }
+    util::shell_open(&url, None, "open")
+}
+
 /// Fixed list of tools the UI may open. Nothing else can be launched through this command.
 #[tauri::command]
 pub fn open_tool(tool: String) -> Res<()> {
-    let (target, params): (&str, Option<&str>) = match tool.as_str() {
-        "taskmgr" => ("taskmgr.exe", None),
-        "devmgmt" => ("devmgmt.msc", None),
-        "control" => ("control.exe", None),
-        "msinfo" => ("msinfo32.exe", None),
-        "diskmgmt" => ("diskmgmt.msc", None),
-        "services" => ("services.msc", None),
-        "rstrui" => ("rstrui.exe", None),
-        "firewall" => ("wf.msc", None),
-        "defender" => ("windowsdefender:", None),
-        "updates" => ("ms-settings:windowsupdate", None),
-        "taskschd" => ("taskschd.msc", None),
+    // System programs are opened by full path (never searched in the current folder).
+    let exe = |n: &str| util::sys_tool(n).to_string_lossy().to_string();
+    let msc = |n: &str| (exe("mmc.exe"), Some(format!("\"{}\"", exe(n))));
+    let uri = |u: &str| (u.to_string(), None);
+    let (target, params): (String, Option<String>) = match tool.as_str() {
+        "taskmgr" => (exe("taskmgr.exe"), None),
+        "devmgmt" => msc("devmgmt.msc"),
+        "control" => (exe("control.exe"), None),
+        "msinfo" => (exe("msinfo32.exe"), None),
+        "diskmgmt" => msc("diskmgmt.msc"),
+        "services" => msc("services.msc"),
+        "rstrui" => (exe("rstrui.exe"), None),
+        "firewall" => msc("wf.msc"),
+        "defender" => uri("windowsdefender:"),
+        "updates" => uri("ms-settings:windowsupdate"),
+        "taskschd" => msc("taskschd.msc"),
+        "appinstaller" => uri("ms-windows-store://pdp/?productid=9NBLGGH4NNS1"),
         _ => return Err(tr("Неизвестный инструмент", "Unknown tool")),
     };
-    util::shell_open(target, params, "open")
+    util::shell_open(&target, params.as_deref(), "open")
 }
 
 /// Opens Explorer with the item selected (or the folder itself).

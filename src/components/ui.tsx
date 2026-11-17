@@ -1,5 +1,5 @@
 import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform, useVelocity } from "motion/react";
-import { AlertCircle, Check, Loader2, Search } from "lucide-react";
+import { AlertCircle, Check, Loader2, Search, Square } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { errorText } from "../lib/api";
@@ -167,6 +167,9 @@ export function Tabs<T extends string>({
     }
     setLifted(true);
     setHover(p.index);
+    // The lens jumps to the held tab, so a long press without moving still selects it.
+    targetX.set(leftOf(p.index));
+    targetW.set(widthOf(p.index));
   };
 
   const onPointerDown = (e: React.PointerEvent, index: number) => {
@@ -177,11 +180,32 @@ export function Tabs<T extends string>({
     p.timer = window.setTimeout(() => {
       if (press.current === p && !p.dragging) lifting(p, p.id);
     }, 180);
+    // Released anywhere (even outside the bar or the window): the press must always end,
+    // otherwise the lens stays where the pointer left it.
+    const end = (ev: Event) => {
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", end, true);
+      window.removeEventListener("blur", end);
+      if (press.current !== p) return;
+      if (!p.dragging) {
+        window.clearTimeout(p.timer);
+        press.current = null;
+      } else {
+        finish(ev.type === "pointerup");
+      }
+    };
+    window.addEventListener("pointerup", end, true);
+    window.addEventListener("pointercancel", end, true);
+    window.addEventListener("blur", end);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const p = press.current;
     if (!p) return;
+    if (p.dragging && e.buttons === 0) {
+      finish(true); // the release got lost
+      return;
+    }
     if (!p.dragging) {
       if (Math.abs(e.clientX - p.startX) < 5) return;
       lifting(p, e.pointerId);
@@ -345,7 +369,7 @@ export function Ring({
   );
 }
 
-export function Sparkline({ values, height = 28, max }: { values: number[]; height?: number; max?: number }) {
+export function Sparkline({ values, height = 34, max }: { values: number[]; height?: number; max?: number }) {
   const w = 240;
   if (values.length < 2) {
     return (
@@ -354,12 +378,32 @@ export function Sparkline({ values, height = 28, max }: { values: number[]; heig
       </svg>
     );
   }
-  const top = max ?? Math.max(...values, 1);
+  // Scale to the data itself (a flat 0–100 scale makes a steady 90% look like a ruler line),
+  // but keep a minimum span so tiny noise doesn't turn into wild swings.
+  const cap = max ?? Math.max(...values, 1);
+  const minSpan = cap * 0.2;
+  let lo = Math.min(...values);
+  let hi = Math.max(...values);
+  if (hi - lo < minSpan) {
+    const mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
+  }
   const step = w / (values.length - 1);
-  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (clamp(v, 0, top) / top) * (height - 6)).toFixed(1)}`);
+  const xy = values.map((v, i) => [i * step, height - 3 - ((clamp(v, lo, hi) - lo) / (hi - lo)) * (height - 8)] as const);
+  // Smooth curve through the midpoints of neighbouring samples.
+  let d = `M ${xy[0][0].toFixed(1)} ${xy[0][1].toFixed(1)}`;
+  for (let i = 1; i < xy.length - 1; i++) {
+    const mx = (xy[i][0] + xy[i + 1][0]) / 2;
+    const my = (xy[i][1] + xy[i + 1][1]) / 2;
+    d += ` Q ${xy[i][0].toFixed(1)} ${xy[i][1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+  }
+  const last = xy[xy.length - 1];
+  d += ` L ${last[0].toFixed(1)} ${last[1].toFixed(1)}`;
   return (
     <svg viewBox={`0 0 ${w} ${height}`} width="100%" height={height} preserveAspectRatio="none" aria-hidden>
-      <polyline points={pts.join(" ")} fill="none" stroke="#8d8d94" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <path d={`${d} L ${w} ${height} L 0 ${height} Z`} fill="rgba(141,141,148,0.10)" />
+      <path d={d} fill="none" stroke="#8d8d94" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -393,6 +437,17 @@ export function CountUp({ value, format }: { value: number; format: (v: number) 
 /* ---------- States ---------- */
 export function Spinner({ size = 16 }: { size?: number }) {
   return <Loader2 size={size} className="spin" aria-hidden />;
+}
+
+/** "Stop" for a long operation. Stays disabled once pressed, until the operation ends. */
+export function StopButton({ onClick, stopping, small }: { onClick: () => void; stopping: boolean; small?: boolean }) {
+  const t = useT();
+  return (
+    <button className={`btn btn-secondary ${small ? "sm" : ""}`} disabled={stopping} onClick={onClick}>
+      {stopping ? <Spinner size={small ? 14 : 16} /> : <Square size={small ? 12 : 14} fill="currentColor" />}
+      {stopping ? t.common.stopping : t.common.stop}
+    </button>
+  );
 }
 
 export function Empty({ icon, text, action }: { icon?: ReactNode; text: string; action?: ReactNode }) {

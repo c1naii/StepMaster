@@ -11,6 +11,8 @@ export type ModuleId =
   | "protection"
   | "network"
   | "games"
+  | "wallpapers"
+  | "journal"
   | "settings";
 
 export interface ConfirmRequest {
@@ -39,6 +41,8 @@ interface State {
   pendingTab: string | null;
   /** Action to run on the next page mount (e.g. "scan" on cleanup). */
   pendingAction: string | null;
+  /** Changes on a deep link to the page already open, so it remounts and reads the pending tab/action. */
+  navNonce: number;
   settings: Settings;
   app: AppInfo | null;
   paletteOpen: boolean;
@@ -57,11 +61,19 @@ export const useStore = create<State>((set, get) => ({
   route: "home",
   pendingTab: null,
   pendingAction: null,
+  navNonce: 0,
   settings: DEFAULT_SETTINGS,
   app: null,
   paletteOpen: false,
   confirm: null,
-  navigate: (route, tab = null, action = null) => set({ route, pendingTab: tab, pendingAction: action, paletteOpen: false }),
+  navigate: (route, tab = null, action = null) =>
+    set((s) => ({
+      route,
+      pendingTab: tab,
+      pendingAction: action,
+      paletteOpen: false,
+      navNonce: route === s.route && (tab !== null || action !== null) ? s.navNonce + 1 : s.navNonce,
+    })),
   takePendingTab: () => {
     const t = get().pendingTab;
     if (t !== null) set({ pendingTab: null });

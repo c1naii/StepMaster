@@ -1,5 +1,6 @@
 //! Windows services and System Restore.
 use crate::util::{self, psq, tr, Res};
+use crate::journal::{self, Undo};
 use serde::{Deserialize, Serialize};
 
 /// Services the app refuses to stop or reconfigure.
@@ -10,13 +11,17 @@ const CRITICAL: &[&str] = &[
     "coremessagingregistrar", "gpsvc", "lanmanworkstation", "netprofm", "nlasvc", "sens", "systemeventsbroker",
     "themes", "userManager", "usermanager", "wlansvc", "wscsvc", "trustedinstaller", "msiserver", "vds",
     "vaultsvc", "keyiso", "appinfo", "staterepository", "tokenbroker", "termservice", "sgrmbroker",
+    "eventsystem", "storsvc", "timebrokersvc", "shellhwdetection", "cdpusersvc", "wpnusersvc", "onesyncsvc",
 ];
 
-fn is_critical(name: &str) -> bool {
-    CRITICAL.contains(&name.to_lowercase().as_str())
+pub(crate) fn is_critical(name: &str) -> bool {
+    let n = name.to_lowercase();
+    // Per-user copies are named like "CDPUserSvc_1a2b3c": check the part before "_".
+    let base = n.split('_').next().unwrap_or(&n);
+    CRITICAL.contains(&n.as_str()) || CRITICAL.contains(&base)
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 256
         && name.chars().all(|c| c.is_alphanumeric() || "_-.@ $".contains(c))
@@ -42,11 +47,12 @@ pub struct ServiceInfo {
 #[tauri::command]
 pub async fn services_list() -> Res<Vec<ServiceInfo>> {
     util::blocking(|| {
-        let mut list: Vec<ServiceInfo> = util::ps_json(
+        let mut list: Vec<ServiceInfo> = util::ps_json_timeout(
             r#"ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Service | ForEach-Object {
                 [pscustomobject]@{ name=[string]$_.Name; displayName=[string]$_.DisplayName;
                   status=$(if ($_.State -eq 'Running') { 'Running' } else { [string]$_.State });
                   startMode=[string]$_.StartMode; description=[string]$_.Description } })"#,
+            60,
         )?;
         for s in &mut list {
             s.critical = is_critical(&s.name);
@@ -73,7 +79,7 @@ fn guard(name: &str) -> Res<()> {
 }
 
 #[tauri::command]
-pub async fn service_action(name: String, action: String) -> Res<()> {
+pub async fn service_action(app: tauri::AppHandle, name: String, action: String) -> Res<()> {
     guard(&name)?;
     let cmd = match action.as_str() {
         "start" => format!("Start-Service -Name {}", psq(&name)),
@@ -81,11 +87,43 @@ pub async fn service_action(name: String, action: String) -> Res<()> {
         "restart" => format!("Restart-Service -Name {} -Force", psq(&name)),
         _ => return Err(tr("Неизвестное действие", "Unknown action")),
     };
-    util::blocking(move || util::ps(&cmd).map(|_| ())).await
+    util::blocking(move || {
+        let was_running = util::ps_timeout(&format!("[string](Get-Service -Name {}).Status", psq(&name)), 30)
+            .map(|s| s.trim().eq_ignore_ascii_case("running"))
+            .ok();
+        util::ps(&cmd)?;
+        // Undo puts the service back the way it was (restart changes nothing to undo).
+        let undo = match (action.as_str(), was_running) {
+            ("stop", Some(true)) => Some(Undo::ServiceRun { name: name.clone(), run: true }),
+            ("start", Some(false)) => Some(Undo::ServiceRun { name: name.clone(), run: false }),
+            _ => None,
+        };
+        journal::add(&app, &format!("service_{action}"), &name, "", undo);
+        Ok(())
+    })
+    .await
+}
+
+/// Current start type of a service as `sc config` takes it (auto / delayed-auto / demand / disabled).
+fn start_type(name: &str) -> Option<String> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    let k = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(format!(r"SYSTEM\CurrentControlSet\Services\{name}")).ok()?;
+    let start: u32 = k.get_value("Start").ok()?;
+    let delayed: u32 = k.get_value("DelayedAutostart").unwrap_or(0);
+    Some(
+        match (start, delayed) {
+            (2, 1) => "delayed-auto",
+            (2, _) => "auto",
+            (3, _) => "demand",
+            (4, _) => "disabled",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 #[tauri::command]
-pub async fn service_start_mode(name: String, mode: String) -> Res<()> {
+pub async fn service_start_mode(app: tauri::AppHandle, name: String, mode: String) -> Res<()> {
     guard(&name)?;
     let m = match mode.as_str() {
         "auto" => "Automatic",
@@ -94,7 +132,14 @@ pub async fn service_start_mode(name: String, mode: String) -> Res<()> {
         _ => return Err(tr("Неизвестный режим", "Unknown mode")),
     };
     let cmd = format!("Set-Service -Name {} -StartupType {m}", psq(&name));
-    util::blocking(move || util::ps(&cmd).map(|_| ())).await
+    util::blocking(move || {
+        let before = start_type(&name);
+        util::ps(&cmd)?;
+        let undo = before.map(|mode| Undo::ServiceMode { name: name.clone(), mode });
+        journal::add(&app, "service_mode", &name, &mode, undo);
+        Ok(())
+    })
+    .await
 }
 
 /* ---------------- System Restore ---------------- */
@@ -166,8 +211,15 @@ pub fn create_point(description: &str) -> Res<String> {
 }
 
 #[tauri::command]
-pub async fn restore_create(description: String) -> Res<String> {
-    util::blocking(move || create_point(&description)).await
+pub async fn restore_create(app: tauri::AppHandle, description: String) -> Res<String> {
+    util::blocking(move || {
+        let r = create_point(&description)?;
+        if r == "created" {
+            journal::add(&app, "restore_point", &description, "", None);
+        }
+        Ok(r)
+    })
+    .await
 }
 
 #[tauri::command]

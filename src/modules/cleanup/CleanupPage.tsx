@@ -1,12 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
 import { Check, RotateCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Checkbox, ErrorState, PageHeader, Ring, Skeleton, Spinner, notify, useCalm } from "../../components/ui";
+import { Checkbox, ErrorState, PageHeader, Ring, Skeleton, Spinner, notify, useCalm, StopButton } from "../../components/ui";
 import { countOf, fmt, useLang, useT } from "../../i18n";
-import { api, errorText, on } from "../../lib/api";
+import { api, errorText, subscribe } from "../../lib/api";
 import { invalidate } from "../../lib/cache";
 import { formatBytes } from "../../lib/format";
-import { useStore } from "../../lib/store";
+import { ask, useStore } from "../../lib/store";
 import type { CleanupCategory, CleanupId, CleanupProgress, CleanupResult } from "../../lib/types";
 
 type Phase = "idle" | "scanning" | "ready" | "cleaning" | "done" | "error";
@@ -17,6 +17,7 @@ export function CleanupPage() {
   const isAdmin = useStore((s) => s.app?.isAdmin ?? true);
   const calm = useCalm();
 
+  const [stopping, setStopping] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [cats, setCats] = useState<CleanupCategory[]>([]);
   const [selected, setSelected] = useState<Set<CleanupId>>(new Set());
@@ -40,7 +41,8 @@ export function CleanupPage() {
       const res = await api.cleanupScan();
       if (!alive.current) return;
       setCats(res);
-      setSelected(new Set(res.filter((c) => c.available && c.size > 0 && (!c.needsAdmin || isAdmin)).map((c) => c.id)));
+      // The Recycle Bin is never pre-selected: emptying it can't be undone.
+      setSelected(new Set(res.filter((c) => c.id !== "recycle_bin" && c.available && c.size > 0 && (!c.needsAdmin || isAdmin)).map((c) => c.id)));
       setPhase("ready");
     } catch (e) {
       if (!alive.current) return;
@@ -58,13 +60,13 @@ export function CleanupPage() {
 
   useEffect(() => {
     let off: (() => void) | undefined;
-    void on<CleanupProgress>("cleanup://progress", (p) => {
+    off = subscribe<CleanupProgress>("cleanup://progress", (p) => {
       setProgress((prev) => {
         const done = new Set(prev.done);
         if (p.phase === "done") done.add(p.id);
         return { current: p.phase === "start" ? p.id : prev.current, done };
       });
-    }).then((u) => (off = u));
+    });
     return () => off?.();
   }, []);
 
@@ -76,12 +78,18 @@ export function CleanupPage() {
       notify.info(t.cleanup.selectAtLeastOne);
       return;
     }
+    if (selected.has("recycle_bin")) {
+      const ok = await ask({ title: t.cleanup.binTitle, text: t.cleanup.binText, confirmLabel: t.cleanup.binOk, cancelLabel: t.common.cancel, danger: true });
+      if (!ok) return;
+    }
     setPhase("cleaning");
+    setStopping(false);
     setProgress({ current: null, done: new Set() });
     try {
       const res = await api.cleanupRun([...selected]);
       invalidate("cleanupScan");
       if (!alive.current) return;
+      if (res.stopped) notify.info(t.common.stopped);
       setResult(res);
       setPhase("done");
     } catch (e) {
@@ -175,6 +183,18 @@ export function CleanupPage() {
                 {phase === "cleaning" ? t.cleanup.cleaning : fmt(t.cleanup.clean, { size: formatBytes(selectedSize, lang) })}
               </button>
             )}
+            {phase === "cleaning" ? (
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <StopButton
+                  small
+                  stopping={stopping}
+                  onClick={() => {
+                    setStopping(true);
+                    api.opCancel("cleanup").catch(notify.err);
+                  }}
+                />
+              </div>
+            ) : null}
           </section>
 
           {/* Categories */}

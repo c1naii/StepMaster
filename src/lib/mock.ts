@@ -3,12 +3,49 @@
 import type {
   AppInfo,
   InstallState,
+  WingetState,
+  WingetHit,
   CleanupCategory,
   GameModeStatus,
   ProgramInfo,
   Settings,
   StartupItem,
+  WallItem,
+  WallOptions,
+  WallState,
 } from "./types";
+
+const WALL_BUILTIN: WallItem[] = (
+  [
+    ["win10", "10", 2000, 1125],
+    ["win7", "7", 1920, 1200],
+    ["xp", "XP", 1920, 1200],
+    ["win11", "11", 2000, 1250],
+    ["cat", "Cat", 1672, 941],
+    ["iceberg", "Iceberg", 1672, 941],
+    ["pinky", "Pinky", 1672, 941],
+    ["backrooms", "Backrooms", 1672, 941],
+    ["vi", "VI", 1672, 941],
+  ] as const
+).map(([key, name, width, height]) => ({
+  id: `b:${key}`,
+  name,
+  builtin: true,
+  path: `/assets/wallpapers/${key}.jpg`,
+  thumb: `/assets/wallpapers/${key}.thumb.jpg`,
+  width,
+  height,
+}));
+const wall = {
+  mine: [] as WallItem[],
+  current: null as string | null,
+  changed: false,
+  options: { fit: "fill", auto: false, interval: 60, shuffle: true, source: "all" } as WallOptions,
+};
+function wallState(changed = false): WallState {
+  if (changed) wall.changed = true;
+  return { builtin: WALL_BUILTIN, mine: [...wall.mine], current: wall.current, options: wall.options, canRestore: wall.changed };
+}
 
 type Mode = "normal" | "worst" | "empty" | "error";
 
@@ -25,6 +62,52 @@ function mode(): Mode {
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/* "Stop" buttons: op_cancel raises a flag, the long mocks below notice it while waiting. */
+const stopFlags: Record<string, boolean> = {};
+const STOPPED = "Остановлено";
+async function opSleep(op: string, ms: number) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (stopFlags[op]) throw STOPPED;
+    await sleep(Math.min(100, end - Date.now()));
+  }
+  if (stopFlags[op]) throw STOPPED;
+}
+
+/** Example update creative (in a real release it is the banner.png attached to it). */
+function mockBanner(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440">
+<defs>
+<radialGradient id="g1" cx="78%" cy="30%" r="60%"><stop offset="0" stop-color="#3a3a3a"/><stop offset="1" stop-color="#0b0b0b"/></radialGradient>
+<linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#fff" stop-opacity=".04"/></linearGradient>
+</defs>
+<rect width="960" height="440" fill="url(#g1)"/>
+<g opacity=".9" transform="translate(110 40)">
+<circle cx="720" cy="190" r="150" fill="url(#glass)" stroke="#fff" stroke-opacity=".25"/>
+<circle cx="820" cy="300" r="80" fill="url(#glass)" stroke="#fff" stroke-opacity=".2"/>
+<rect x="600" y="250" width="190" height="64" rx="32" fill="url(#glass)" stroke="#fff" stroke-opacity=".3"/>
+<rect x="628" y="272" width="20" height="20" rx="4" fill="#fff"/>
+<text x="664" y="290" font-family="Segoe UI, sans-serif" font-size="22" fill="#fff">Остановить</text>
+</g>
+<text x="64" y="96" font-family="Segoe UI, sans-serif" font-size="22" fill="#9a9a9a" letter-spacing="4">STEPMASTER</text>
+<text x="64" y="196" font-family="Segoe UI, sans-serif" font-size="64" font-weight="600" fill="#fff">Журнал</text>
+<text x="64" y="266" font-family="Segoe UI, sans-serif" font-size="64" font-weight="600" fill="#fff">и кнопка «Стоп»</text>
+<text x="64" y="330" font-family="Segoe UI, sans-serif" font-size="24" fill="#a8a8a8">Всё, что меняет программа, можно вернуть</text>
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/* Journal: a few example entries, reverting marks them. */
+const now = () => Math.floor(Date.now() / 1000);
+let journal: { id: number; at: number; kind: string; target: string; detail: string; undo: { type: string } | null; reverted: boolean }[] = [
+  { id: 6, at: now() - 600, kind: "dns", target: "", detail: "cloudflare", undo: { type: "dns" }, reverted: false },
+  { id: 5, at: now() - 3600, kind: "service_mode", target: "SysMain", detail: "disabled", undo: { type: "serviceMode" }, reverted: false },
+  { id: 4, at: now() - 7200, kind: "startup_off", target: "Discord", detail: "", undo: { type: "startup" }, reverted: true },
+  { id: 3, at: now() - 86400, kind: "cleanup", target: "", detail: String(6.2 * 1024 ** 3), undo: null, reverted: false },
+  { id: 2, at: now() - 86400 - 500, kind: "uninstall", target: "Avast Free Antivirus", detail: "", undo: null, reverted: false },
+  { id: 1, at: now() - 86400 * 3, kind: "game_mode", target: "", detail: "", undo: { type: "gameMode" }, reverted: false },
+];
 const LONG = "Очень-очень длинное название программы которое не помещается в строку Ultimate Edition 2026 x64 (Portable Build)";
 
 let settings: Settings = {
@@ -92,6 +175,8 @@ function programs(): ProgramInfo[] {
   return list.map((p, i) => ({ ...p, icon: i % 7 === 6 ? `C:\\${p.id}.none` : `C:\\${p.id}.exe` }));
 }
 
+let mockCancel = false;
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown | Promise<unknown>> = {
   app_info: (): AppInfo => ({
     version: "1.0.0",
@@ -113,7 +198,15 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   open_data_dir: () => undefined,
   open_app_dir: () => undefined,
   reveal_path: () => undefined,
-  update_check: () => ({ available: mode() === "worst" }),
+  // Update window preview: localStorage.setItem("sm-update", "1") (or the "worst" mode).
+  update_check: () => ({ available: mode() === "worst" || localStorage.getItem("sm-update") === "1" }),
+  update_notes: () => ({
+    image: mockBanner(),
+    sections: [
+      { title: "Новое", items: ["Журнал: всё, что менял StepMaster, и кнопка «Вернуть»", "Кнопка «Остановить» у диагностики, очистки, теста скорости и поиска дубликатов", "Окно обновления с картинкой и списком изменений"] },
+      { title: "Исправлено", items: ["Обои пользователя больше не теряются после перезапуска", "Меньше ложных тревог в диагностике", "Корзина не очищается без вопроса"] },
+    ],
+  }),
   update_install: async () => {
     for (let i = 0; i <= 100; i += 10) {
       emit("update://progress", { percent: i });
@@ -131,6 +224,96 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   },
   quit_app: () => undefined,
   // Installer screen in the browser: localStorage.setItem('sm-install', 'setup' | 'uninstall')
+  wallpaper_state: () => wallState(),
+  wallpaper_view: async (a) => {
+    await sleep(300);
+    return [...wall.mine, ...WALL_BUILTIN].find((x) => x.id === a.id)?.path ?? "";
+  },
+  wallpaper_set: async (a) => {
+    await sleep(500);
+    wall.current = String(a.id);
+    return wallState(true);
+  },
+  wallpaper_next: async () => {
+    await sleep(400);
+    const all = [...wall.mine, ...WALL_BUILTIN];
+    const i = all.findIndex((x) => x.id === wall.current);
+    wall.current = all[(i + 1) % all.length].id;
+    return wallState(true);
+  },
+  wallpaper_options: (a) => {
+    wall.options = a.options as WallOptions;
+    return wallState();
+  },
+  wallpaper_add: async (a) => {
+    await sleep(600);
+    const paths = a.paths as string[];
+    for (const p of paths) {
+      const src = WALL_BUILTIN[wall.mine.length % WALL_BUILTIN.length];
+      const name = (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
+      wall.mine.unshift({ ...src, id: `u:${Date.now()}${wall.mine.length}.jpg`, name, builtin: false });
+    }
+    return { state: wallState(), added: paths.length, failed: [] };
+  },
+  wallpaper_rename: (a) => {
+    wall.mine = wall.mine.map((x) => (x.id === a.id ? { ...x, name: String(a.name).trim().slice(0, 60) } : x));
+    return wallState();
+  },
+  wallpaper_remove: (a) => {
+    wall.mine = wall.mine.filter((x) => x.id !== a.id);
+    return wallState();
+  },
+  wallpaper_restore: async () => {
+    await sleep(400);
+    wall.current = null;
+    wall.changed = false;
+    wall.options = { ...wall.options, auto: false };
+    return wallState();
+  },
+  winget_state: (): WingetState => ({
+    available: mode() !== "empty",
+    version: "v1.29.380",
+    installed: ["Valve.Steam", "VideoLAN.VLC", "7zip.7zip", "Microsoft.VCRedist.2015+.x64"],
+  }),
+  winget_search: (a): WingetHit[] =>
+    String(a.query).length < 2
+      ? []
+      : [
+          { name: `${a.query} Pro`, id: "Example.ProTool", version: "2.4.1" },
+          { name: "Notepad++", id: "Notepad++.Notepad++", version: "8.8.1" },
+          { name: mode() === "worst" ? "Очень-очень длинное название программы, которое не помещается" : "Tiny", id: "Some.Very.Long.Package.Identifier.That.Goes.On", version: "1.0.0.0.0.1" },
+        ],
+  open_site: () => undefined,
+  winget_cancel: () => {
+    mockCancel = true;
+  },
+  winget_install: (a) => {
+    const ids = a.ids as string[];
+    mockCancel = false;
+    void (async () => {
+      for (const id of ids) emit("winget://progress", { id, state: "queued", note: null });
+      for (const [i, id] of ids.entries()) {
+        if (mockCancel) {
+          emit("winget://progress", { id, state: "failed", note: "cancelled" });
+          continue;
+        }
+        emit("winget://progress", { id, state: "running", note: null, percent: null });
+        for (let p = 0; p <= 100; p += 20) {
+          if (mockCancel) break;
+          emit("winget://progress", { id, state: "running", note: null, percent: p, done: (p / 100) * 85_000_000, total: 85_000_000 });
+          await sleep(250);
+        }
+        if (mockCancel) {
+          emit("winget://progress", { id, state: "failed", note: "cancelled" });
+          continue;
+        }
+        await sleep(500);
+        const fail = mode() === "worst" && i % 2 === 1;
+        emit("winget://progress", { id, state: fail ? "failed" : "done", note: fail ? "Ошибка установщика 0x8A150014 (тест)" : i === 2 ? "reboot" : null });
+      }
+      emit("winget://finished", null);
+    })();
+  },
   install_state: (): InstallState => {
     let m: InstallState["mode"] = "normal";
     try {
@@ -188,11 +371,17 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     return cleanupCats();
   },
   cleanup_run: async (a) => {
+    stopFlags.cleanup = false;
     const ids = a.ids as CleanupCategory["id"][];
     const cats = cleanupCats();
     let freed = 0;
+    let stopped = false;
     const per: { id: CleanupCategory["id"]; freed: number }[] = [];
     for (const id of ids) {
+      if (stopFlags.cleanup) {
+        stopped = true;
+        break;
+      }
       emit("cleanup://progress", { id, phase: "start" });
       await sleep(450);
       const c = cats.find((x) => x.id === id);
@@ -201,7 +390,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
       per.push({ id, freed: f });
       emit("cleanup://progress", { id, phase: "done" });
     }
-    return { freed, deleted: 12345, skipped: 42, perCategory: per };
+    return { stopped, freed, deleted: 12345, skipped: 42, perCategory: per };
   },
   history_get: () => ({ totalFreed: mode() === "empty" ? 0 : 48.3 * GB, runs: [{ at: Date.now() / 1000 - 86400 * 3, freed: 6.2 * GB }] }),
 
@@ -239,7 +428,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
         ],
   disk_cancel: () => undefined,
   duplicates_scan: async () => {
-    await sleep(800);
+    stopFlags.dupes = false;
+    await opSleep("dupes", 2500);
     if (mode() === "empty") return [];
     return [
       { size: 2.1 * GB, files: ["C:\\Users\\Step\\Downloads\\movie.mkv", "C:\\Users\\Step\\Videos\\movie (1).mkv"] },
@@ -278,10 +468,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   },
   diag_last: () => null,
   diag_run: async (a) => {
+    stopFlags.diag = false;
     const steps = a.defenderScan ? ["defender", "system", "performance", "evaluate"] : ["system", "performance", "evaluate"];
     for (let i = 0; i < steps.length; i++) {
       emit("diag://progress", { step: steps[i], done: i, total: steps.length });
-      await sleep(steps[i] === "defender" ? 1800 : 700);
+      await opSleep("diag", steps[i] === "defender" ? 1800 : 700);
     }
     emit("diag://progress", { step: "done", done: steps.length, total: steps.length });
     if (mode() === "empty") {
@@ -360,7 +551,17 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     ],
   }),
   defender_quick_scan: async () => {
-    await sleep(2500);
+    stopFlags.defender = false;
+    await opSleep("defender", 4000);
+  },
+  op_cancel: (a) => {
+    stopFlags[a.op as string] = true;
+  },
+  journal_get: () => (mode() === "empty" ? [] : journal),
+  journal_revert: async (a) => {
+    await sleep(500);
+    journal = journal.map((e) => (e.id === a.id ? { ...e, reverted: true } : e));
+    return journal;
   },
   defender_update: async () => {
     await sleep(1500);
@@ -379,15 +580,16 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   dns_set: () => undefined,
   network_reset: () => undefined,
   speed_test: async () => {
+    stopFlags.speed = false;
     emit("speed://progress", { phase: "ping", value: 14 });
-    await sleep(500);
+    await opSleep("speed", 500);
     for (let i = 0; i < 8; i++) {
       emit("speed://progress", { phase: "download", value: 80 + i * 12 });
-      await sleep(200);
+      await opSleep("speed", 200);
     }
     for (let i = 0; i < 6; i++) {
       emit("speed://progress", { phase: "upload", value: 20 + i * 5 });
-      await sleep(200);
+      await opSleep("speed", 200);
     }
     return { pingMs: 14, downMbps: 164.2, upMbps: 45.1 };
   },

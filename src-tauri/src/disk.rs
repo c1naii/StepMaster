@@ -117,7 +117,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> (u64, u64) {
     let child: Vec<(u64, u64)> = subdirs.par_iter().map(|d| walk(d, ctx)).collect();
     let size = own_size + child.iter().map(|c| c.0).sum::<u64>();
     let files = own_files + child.iter().map(|c| c.1).sum::<u64>();
-    top.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    top.sort_unstable_by_key(|x| std::cmp::Reverse(x.1));
     top.truncate(TOP_FILES_PER_DIR);
     ctx.nodes.lock().insert(dir.to_path_buf(), Node { size, files, subdirs, top_files: top });
     (size, files)
@@ -180,7 +180,7 @@ fn folder_view(cache: &ScanCache, path: &Path) -> Res<Folder> {
             files: 1,
         });
     }
-    entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    entries.sort_unstable_by_key(|x| std::cmp::Reverse(x.size));
     entries.truncate(300);
     Ok(Folder { path: key.to_string_lossy().to_string(), size: node.size, files: node.files, entries })
 }
@@ -229,7 +229,7 @@ pub async fn disk_scan(app: AppHandle, path: String) -> Res<Folder> {
             return Err(tr("Анализ остановлен", "Scan stopped"));
         }
         let mut large = ctx.large.into_inner();
-        large.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        large.sort_unstable_by_key(|x| std::cmp::Reverse(x.1));
         large.truncate(LARGE_FILES_KEEP);
         let st = app3.state::<AppState>();
         let mut cache = st.disk.cache.lock();
@@ -380,6 +380,12 @@ pub async fn fs_recycle(app: AppHandle, paths: Vec<String>) -> Res<RecycleResult
     for p in &done {
         forget_path(&mut cache, p, sizes.get(p).copied());
     }
+    drop(cache);
+    if !done.is_empty() {
+        let bytes: u64 = done.iter().filter_map(|p| sizes.get(p)).sum();
+        let first = done[0].to_string_lossy().to_string();
+        crate::journal::add(&app, "recycle", &first, &format!("{}|{bytes}", done.len()), None);
+    }
     Ok(RecycleResult { ok: done.len() as u32, failed })
 }
 
@@ -395,15 +401,24 @@ pub struct DupGroup {
 const DUP_MIN: u64 = 1024 * 1024;
 const DUP_MAX_FILES: usize = 300_000;
 
+/// Program and system folders legitimately hold identical files (DLLs copied per app):
+/// offering them as "duplicates" would let the user break programs. They are never scanned.
+fn dup_skip_dir(p: &Path) -> bool {
+    let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let at_drive_root = p.parent().is_some_and(|q| q.parent().is_none());
+    ["$recycle.bin", "system volume information", "appdata", "windowsapps", "node_modules", ".git"].contains(&name.as_str())
+        || (at_drive_root && ["windows", "program files", "program files (x86)", "programdata"].contains(&name.as_str()))
+}
+
 fn collect_files(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
-    if depth > 40 || out.len() >= DUP_MAX_FILES {
+    if depth > 40 || out.len() >= DUP_MAX_FILES || crate::ops::cancelled(crate::ops::Op::Dupes) {
         return;
     }
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
         if md.is_dir() {
-            if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 && !dup_skip_dir(&e.path()) {
                 collect_files(&e.path(), out, depth + 1);
             }
         } else if md.len() >= DUP_MIN && counts_on_disk(&md) {
@@ -437,9 +452,18 @@ pub async fn duplicates_scan(path: String) -> Res<Vec<DupGroup>> {
     if !root.is_absolute() || !root.is_dir() {
         return Err(tr("Папка не найдена", "Folder not found"));
     }
+    if root.ancestors().any(dup_skip_dir) {
+        return Err(tr("В системных папках и папках программ дубликаты не ищутся", "System and program folders aren't searched for duplicates"));
+    }
+    use crate::ops::{self, Op};
+    let running = ops::start(Op::Dupes)?;
     util::blocking(move || {
+        let _running = running;
         let mut files = Vec::new();
         collect_files(&root, &mut files, 0);
+        if ops::cancelled(Op::Dupes) {
+            return Err(ops::stopped());
+        }
         // 1) group by size
         let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
         for (p, s) in files {
@@ -452,6 +476,9 @@ pub async fn duplicates_scan(path: String) -> Res<Vec<DupGroup>> {
             .flat_map(|(size, paths)| {
                 let mut quick: HashMap<[u8; 32], Vec<PathBuf>> = HashMap::new();
                 for p in paths {
+                    if ops::cancelled(Op::Dupes) {
+                        return Vec::new();
+                    }
                     if let Some(h) = hash_file(&p, Some(64 * 1024)) {
                         quick.entry(h).or_default().push(p);
                     }
@@ -460,6 +487,9 @@ pub async fn duplicates_scan(path: String) -> Res<Vec<DupGroup>> {
                 for (_, same) in quick.into_iter().filter(|(_, v)| v.len() > 1) {
                     let mut full: HashMap<[u8; 32], Vec<PathBuf>> = HashMap::new();
                     for p in same {
+                        if ops::cancelled(Op::Dupes) {
+                            return Vec::new();
+                        }
                         if let Some(h) = if size <= 64 * 1024 { hash_file(&p, Some(64 * 1024)) } else { hash_file(&p, None) } {
                             full.entry(h).or_default().push(p);
                         }
@@ -472,8 +502,11 @@ pub async fn duplicates_scan(path: String) -> Res<Vec<DupGroup>> {
                 out
             })
             .collect();
+        if ops::cancelled(Op::Dupes) {
+            return Err(ops::stopped());
+        }
         let mut groups = groups;
-        groups.sort_unstable_by(|a, b| (b.size * (b.files.len() as u64 - 1)).cmp(&(a.size * (a.files.len() as u64 - 1))));
+        groups.sort_unstable_by_key(|g| std::cmp::Reverse(g.size * (g.files.len() as u64 - 1)));
         groups.truncate(300);
         Ok(groups)
     })
@@ -484,6 +517,17 @@ pub async fn duplicates_scan(path: String) -> Res<Vec<DupGroup>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn dup_skips_system_folders() {
+        assert!(dup_skip_dir(Path::new(r"C:\Windows")));
+        assert!(dup_skip_dir(Path::new(r"D:\Program Files")));
+        assert!(dup_skip_dir(Path::new(r"C:\Users\a\AppData")));
+        assert!(!dup_skip_dir(Path::new(r"C:\Users\a\Pictures")));
+        assert!(!dup_skip_dir(Path::new(r"D:\Photos\Windows")));
+        assert!(Path::new(r"C:\Program Files\App\x").ancestors().any(dup_skip_dir));
+    }
+
+    #[allow(clippy::type_complexity)]
     fn cache_with(paths: &[(&str, u64, u64, &[&str], &[(&str, u64)])]) -> ScanCache {
         let mut c = ScanCache::default();
         for (p, size, files, subs, top) in paths {

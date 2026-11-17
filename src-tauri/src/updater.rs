@@ -24,6 +24,114 @@ const SIG_ASSET: &str = "StepMaster.exe.sig";
 pub struct UpdateInfo {
     exe_url: String,
     sig_url: String,
+    notes: Notes,
+}
+
+/// Picture shown on top of the update window: a release asset with one of these names.
+const BANNER_ASSETS: &[&str] = &["banner.webp", "banner.png", "banner.jpg", "banner.jpeg"];
+const BANNER_MAX: u64 = 4 * 1024 * 1024;
+
+/// "What's new" for the update window, taken from the release description on GitHub.
+#[derive(Serialize, Clone, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Notes {
+    pub sections: Vec<NoteSection>,
+    /// Banner picture as a data: URL (None if the release has none).
+    pub image: Option<String>,
+}
+
+#[derive(Serialize, Clone, Default, Debug, PartialEq)]
+pub struct NoteSection {
+    pub title: String,
+    pub items: Vec<String>,
+}
+
+/// Plain text of a markdown line: no **bold**, `code`, [links](url) or leading markers.
+fn plain(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('[') {
+        let Some(j) = rest[i..].find("](") else { break };
+        let Some(k) = rest[i + j..].find(')') else { break };
+        out.push_str(&rest[..i]);
+        out.push_str(&rest[i + 1..i + j]);
+        rest = &rest[i + j + k + 1..];
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace("__", "").replace('`', "").trim().to_string()
+}
+
+/// Release description → short sections. Headings ("## Новое") start a section, list lines
+/// ("- ...") are its items. Text before the first heading (download instructions for the GitHub
+/// page) is skipped when there are headings, and everything after a "---" line is for GitHub only.
+pub fn parse_notes(body: &str) -> Vec<NoteSection> {
+    let is_heading = |l: &str| l.starts_with('#') && l.trim_start_matches('#').starts_with(' ');
+    let has_headings = body.lines().any(|l| is_heading(l.trim()));
+    let mut out: Vec<NoteSection> = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.starts_with("---") {
+            break;
+        }
+        if line.is_empty() || line.starts_with("<!--") || line.starts_with("![") {
+            continue;
+        }
+        if has_headings && out.is_empty() && !is_heading(line) {
+            continue;
+        }
+        if let Some(h) = line.strip_prefix('#').filter(|_| is_heading(line)) {
+            out.push(NoteSection { title: plain(h.trim_start_matches('#')), items: Vec::new() });
+            continue;
+        }
+        let item = ["- ", "* ", "• ", "+ "]
+            .iter()
+            .find_map(|m| line.strip_prefix(m))
+            .or_else(|| line.split_once(". ").filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit())).map(|(_, t)| t))
+            .unwrap_or(line);
+        let text: String = plain(item).chars().take(160).collect();
+        if text.is_empty() {
+            continue;
+        }
+        if out.is_empty() {
+            out.push(NoteSection::default());
+        }
+        out.last_mut().unwrap().items.push(text);
+    }
+    out.retain(|s| !s.items.is_empty());
+    out.truncate(4);
+    for s in &mut out {
+        s.items.truncate(8);
+    }
+    out
+}
+
+/// Downloads the banner picture (small, image types only) as a data: URL.
+async fn banner(url: &str, name: &str) -> Option<String> {
+    use base64::Engine;
+    let mime = match name.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "webp" => "image/webp",
+        "png" => "image/png",
+        _ => "image/jpeg",
+    };
+    let resp = client().ok()?.get(url).timeout(Duration::from_secs(20)).send().await.ok()?;
+    if !resp.status().is_success() || resp.content_length().is_some_and(|n| n > BANNER_MAX) {
+        return None;
+    }
+    // Read in chunks and stop at the limit (the server may not send a size up front).
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > BANNER_MAX {
+            return None;
+        }
+    }
+    // Only real pictures: PNG, JPEG or WebP by their first bytes.
+    let ok = bytes.starts_with(&[0x89, b'P', b'N', b'G']) || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || (bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP");
+    if !ok {
+        return None;
+    }
+    Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)))
 }
 
 #[derive(Deserialize)]
@@ -35,6 +143,8 @@ struct Release {
     prerelease: bool,
     #[serde(default)]
     assets: Vec<Asset>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,10 +169,13 @@ pub fn is_newer(remote: &str, local: &str) -> bool {
     r > l
 }
 
-fn client() -> Res<reqwest::Client> {
+pub(crate) fn client() -> Res<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent("StepMaster-Updater")
-        .timeout(Duration::from_secs(120))
+        // No total timeout: a 25 MB exe on a slow line takes longer than any fixed limit.
+        // A stalled connection is still cut off by the per-read timeout.
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -96,10 +209,20 @@ pub async fn find_update(local: &str) -> Res<Option<UpdateInfo>> {
         return Ok(None);
     }
     let find = |n: &str| rel.assets.iter().find(|a| a.name.eq_ignore_ascii_case(n)).map(|a| a.browser_download_url.clone());
-    Ok(match (find(EXE_ASSET), find(SIG_ASSET)) {
-        (Some(exe_url), Some(sig_url)) => Some(UpdateInfo { exe_url, sig_url }),
-        _ => None,
-    })
+    let (Some(exe_url), Some(sig_url)) = (find(EXE_ASSET), find(SIG_ASSET)) else {
+        return Ok(None);
+    };
+    let mut notes = Notes { sections: parse_notes(rel.body.as_deref().unwrap_or("")), image: None };
+    if let Some((name, url)) = BANNER_ASSETS.iter().find_map(|n| find(n).map(|u| (*n, u))) {
+        notes.image = banner(&url, name).await;
+    }
+    Ok(Some(UpdateInfo { exe_url, sig_url, notes }))
+}
+
+/// "What's new" of the update found by the last check (empty if none).
+#[tauri::command]
+pub fn update_notes(state: tauri::State<'_, AppState>) -> Notes {
+    state.update.lock().as_ref().map(|u| u.notes.clone()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -114,7 +237,11 @@ pub async fn update_check(app: AppHandle) -> Res<Check> {
 pub async fn download_verified(info: &UpdateInfo, on_progress: impl Fn(f64)) -> Res<Vec<u8>> {
     let c = client()?;
     let net = |e: reqwest::Error| format!("{}: {e}", tr("Ошибка загрузки", "Download error"));
-    let sig = c.get(&info.sig_url).send().await.map_err(net)?.text().await.map_err(net)?;
+    let sig_resp = c.get(&info.sig_url).send().await.map_err(net)?;
+    if !sig_resp.status().is_success() {
+        return Err(tr("Файл обновления недоступен", "Update file is unavailable"));
+    }
+    let sig = sig_resp.text().await.map_err(net)?;
     let resp = c.get(&info.exe_url).send().await.map_err(net)?;
     if !resp.status().is_success() {
         return Err(tr("Файл обновления недоступен", "Update file is unavailable"));
@@ -166,6 +293,19 @@ struct Progress {
 
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Res<()> {
+    // A double click on "Update" must not run two downloads/swaps at once.
+    static UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if UPDATING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err(tr("Обновление уже идёт", "Update is already in progress"));
+    }
+    let r = update_install_inner(&app).await;
+    UPDATING.store(false, std::sync::atomic::Ordering::SeqCst);
+    r?;
+    app.exit(0);
+    Ok(())
+}
+
+async fn update_install_inner(app: &AppHandle) -> Res<()> {
     let info = app
         .state::<AppState>()
         .update
@@ -178,9 +318,7 @@ pub async fn update_install(app: AppHandle) -> Res<()> {
     })
     .await?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    util::blocking(move || swap_and_restart(&exe, &data)).await?;
-    app.exit(0);
-    Ok(())
+    util::blocking(move || swap_and_restart(&exe, &data)).await
 }
 
 fn sibling(exe: &Path, ext: &str) -> PathBuf {
@@ -231,6 +369,36 @@ pub fn cleanup_old() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_notes_are_parsed() {
+        let body = "## Новое
+- Кнопка **Остановить** у долгих операций
+- [Журнал](https://x) изменений
+
+## Исправлено
+* Обои не пропадают
+1. Быстрее диагностика
+<!-- hidden -->
+## Пусто
+";
+        let n = parse_notes(body);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].title, "Новое");
+        assert_eq!(n[0].items, vec!["Кнопка Остановить у долгих операций", "Журнал изменений"]);
+        assert_eq!(n[1].items, vec!["Обои не пропадают", "Быстрее диагностика"]);
+        let with_intro = parse_notes("Скачай exe
+## Новое
+- Журнал
+---
+Как установить: ...
+- не показывать");
+        assert_eq!(with_intro.len(), 1);
+        assert_eq!(with_intro[0].items, vec!["Журнал"]);
+        let plain_text = parse_notes("Просто текст без заголовков");
+        assert_eq!(plain_text[0].title, "");
+        assert_eq!(plain_text[0].items.len(), 1);
+    }
     #[test]
     fn versions() {
         assert!(is_newer("v1.0.1", "1.0.0"));

@@ -21,8 +21,7 @@ pub fn known_folder(value: &str, fallback: &str) -> Option<PathBuf> {
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
         .and_then(|k| k.get_value::<String, _>(value))
         .ok()
-        .map(|v| crate::icons::parse_spec(&v).map(|(p, _)| p))
-        .flatten();
+        .and_then(|v| crate::icons::parse_spec(&v).map(|(p, _)| p));
     from_reg.filter(|p| p.is_dir()).or_else(|| env_path("USERPROFILE").map(|h| h.join(fallback)).filter(|p| p.is_dir()))
 }
 
@@ -95,6 +94,7 @@ pub fn product_words(stem: &str) -> Vec<String> {
 }
 
 /// The product part of an installer name joined: "OBS-Studio-30.1-Full-Installer-x64" -> "obsstudio".
+#[cfg(test)]
 pub fn installer_key(stem: &str) -> Option<String> {
     let key: String = product_words(stem).concat();
     (key.chars().count() >= 3).then_some(key)
@@ -281,7 +281,7 @@ pub fn analyze(root: &Path, installed: &[(Vec<String>, String)]) -> Report {
             items[i].flags.push("duplicate".to_string());
         }
     }
-    items.sort_by(|a, b| b.size.cmp(&a.size));
+    items.sort_by_key(|x| std::cmp::Reverse(x.size));
     let total = items.iter().map(|i| i.size).sum();
     Report { root: root.to_string_lossy().to_string(), total, items }
 }

@@ -185,7 +185,7 @@ if ($b) {
   $design = $null; $full = $null
   try { $design = (Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1).DesignedCapacity } catch {}
   try { $full = (Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1).FullChargedCapacity } catch {}
-  $bat = [pscustomobject]@{ percent = [int]$b.EstimatedChargeRemaining; charging = ([int]$b.BatteryStatus -ne 1); designCapacity = $design; fullCapacity = $full }
+  $bat = [pscustomobject]@{ percent = [int]$b.EstimatedChargeRemaining; charging = (@(2,6,7,8,9) -contains [int]$b.BatteryStatus); designCapacity = $design; fullCapacity = $full }
 }
 [pscustomobject]@{
   cpuName = ([string]$cpu.Name).Trim()
@@ -289,7 +289,8 @@ pub async fn processes_list(app: AppHandle) -> Res<Vec<ProcessInfo>> {
     util::blocking(move || Ok(list_processes(&app.state::<AppState>()))).await
 }
 
-pub fn kill_pid(state: &AppState, pid: u32) -> Res<()> {
+/// Ends the process; returns its name.
+pub fn kill_pid(state: &AppState, pid: u32) -> Res<String> {
     if pid <= 4 || pid == std::process::id() {
         return Err(tr("Этот процесс нельзя завершить", "This process can't be ended"));
     }
@@ -302,7 +303,7 @@ pub fn kill_pid(state: &AppState, pid: u32) -> Res<()> {
         return Err(tr("Это системный процесс — его нельзя завершать", "This is a system process and can't be ended"));
     }
     if p.kill() {
-        Ok(())
+        Ok(p.name().to_string_lossy().to_string())
     } else {
         Err(tr("Не удалось завершить процесс (нет доступа)", "Couldn't end the process (access denied)"))
     }
@@ -310,5 +311,10 @@ pub fn kill_pid(state: &AppState, pid: u32) -> Res<()> {
 
 #[tauri::command]
 pub async fn process_kill(app: AppHandle, pid: u32) -> Res<()> {
-    util::blocking(move || kill_pid(&app.state::<AppState>(), pid)).await
+    util::blocking(move || {
+        let name = kill_pid(&app.state::<AppState>(), pid)?;
+        crate::journal::add(&app, "process_kill", &name, "", None);
+        Ok(())
+    })
+    .await
 }

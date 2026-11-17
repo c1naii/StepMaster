@@ -32,8 +32,11 @@ import type {
   UninstallResult,
   UpdateCheck,
   InstallState,
+  WingetState,
+  WingetHit,
   WifiProfile,
 } from "./types";
+import type { JournalEntry, StoppableOp, UpdateNotes, WallAddResult, WallOptions, WallState } from "./types";
 import { mock } from "./mock";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -53,6 +56,18 @@ export async function on<T>(event: string, handler: (payload: T) => void): Promi
     return listen<T>(event, (e) => handler(e.payload));
   }
   return mock.on(event, handler as (p: unknown) => void);
+}
+
+/** Like `on`, but returns the unsubscribe right away: safe to call in an effect cleanup even
+ *  before the subscription has resolved (otherwise a fast unmount leaves the listener behind). */
+export function subscribe<T>(event: string, handler: (payload: T) => void): () => void {
+  let off: (() => void) | undefined;
+  let dead = false;
+  void on<T>(event, handler).then((u) => (dead ? u() : (off = u)));
+  return () => {
+    dead = true;
+    off?.();
+  };
 }
 
 /** Converts backend errors (strings) into readable messages. */
@@ -77,11 +92,17 @@ export const api = {
   openAppDir: () => call<void>("open_app_dir"),
   reveal: (path: string) => call<void>("reveal_path", { path }),
   updateCheck: () => call<UpdateCheck>("update_check"),
+  updateNotes: () => call<UpdateNotes>("update_notes"),
   updateInstall: () => call<void>("update_install"),
   icons: (specs: string[]) => call<Record<string, string | null>>("icons_get", { specs }),
   showWindow: () => call<void>("show_main_window"),
   quit: () => call<void>("quit_app"),
   installState: () => call<InstallState>("install_state"),
+  wingetState: () => call<WingetState>("winget_state"),
+  wingetInstall: (ids: string[]) => call<void>("winget_install", { ids }),
+  wingetCancel: () => call<void>("winget_cancel"),
+  wingetSearch: (query: string) => call<WingetHit[]>("winget_search", { query }),
+  openSite: (url: string) => call<void>("open_site", { url }),
   installRun: (dir: string, desktop: boolean, startMenu: boolean) => call<void>("install_run", { dir, desktop, startMenu }),
   uninstallRun: (removeData: boolean) => call<void>("uninstall_run", { removeData }),
 
@@ -99,6 +120,10 @@ export const api = {
   diskChildren: (path: string) => call<DiskFolder>("disk_children", { path }),
   diskLargeFiles: () => call<DiskEntry[]>("disk_large_files"),
   diskCancel: () => call<void>("disk_cancel"),
+  /** "Stop" for a long operation; the running call then fails with "Stopped" (cleanup returns stopped: true). */
+  opCancel: (op: StoppableOp) => call<void>("op_cancel", { op }),
+  journalGet: () => call<JournalEntry[]>("journal_get"),
+  journalRevert: (id: number) => call<JournalEntry[]>("journal_revert", { id }),
   duplicatesScan: (path: string) => call<DuplicateGroup[]>("duplicates_scan", { path }),
   recycle: (paths: string[]) => call<RecycleResult>("fs_recycle", { paths }),
   downloadsScan: (place: "downloads" | "desktop") => call<DownloadsReport>("downloads_scan", { place }),
@@ -124,7 +149,7 @@ export const api = {
 
   // programs
   programs: () => call<ProgramInfo[]>("programs_list"),
-  programUninstall: (id: string) => call<UninstallResult>("program_uninstall", { id }),
+  programUninstall: (id: string, name?: string) => call<UninstallResult>("program_uninstall", { id, name: name ?? null }),
 
   // protection
   protection: () => call<ProtectionStatus>("protection_status"),
@@ -150,6 +175,15 @@ export const api = {
   gpuPrefs: () => call<GpuPref[]>("gpu_prefs"),
   gpuPrefSet: (exe: string, pref: number) => call<void>("gpu_pref_set", { exe, pref }),
   gpuPrefRemove: (exe: string) => call<void>("gpu_pref_remove", { exe }),
+  wallpaperState: () => call<WallState>("wallpaper_state"),
+  wallpaperSet: (id: string) => call<WallState>("wallpaper_set", { id }),
+  wallpaperView: (id: string) => call<string>("wallpaper_view", { id }),
+  wallpaperNext: () => call<WallState>("wallpaper_next"),
+  wallpaperOptions: (options: WallOptions) => call<WallState>("wallpaper_options", { options }),
+  wallpaperAdd: (paths: string[]) => call<WallAddResult>("wallpaper_add", { paths }),
+  wallpaperRemove: (id: string) => call<WallState>("wallpaper_remove", { id }),
+  wallpaperRename: (id: string, name: string) => call<WallState>("wallpaper_rename", { id, name }),
+  wallpaperRestore: () => call<WallState>("wallpaper_restore"),
 };
 
 /** Opens a native file/folder picker. Returns null if cancelled or unavailable. */
@@ -158,6 +192,14 @@ export async function pickPath(opts: { directory: boolean; filters?: { name: str
   const { open } = await import("@tauri-apps/plugin-dialog");
   const res = await open({ directory: opts.directory, multiple: false, filters: opts.filters });
   return typeof res === "string" ? res : null;
+}
+
+/** Picks several image files. Empty array if cancelled. */
+export async function pickImages(extensions: string[]): Promise<string[]> {
+  if (!isTauri) return ["C:\\Users\\Step\\Pictures\\beach.jpg"];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const res = await open({ directory: false, multiple: true, filters: [{ name: "Images", extensions }] });
+  return Array.isArray(res) ? res : typeof res === "string" ? [res] : [];
 }
 
 /** Window controls (no-ops in browser). */

@@ -13,6 +13,33 @@ export interface Settings {
   trayMonitor: boolean;
 }
 
+export interface WingetState {
+  available: boolean;
+  version: string;
+  /** winget package ids installed on this PC. */
+  installed: string[];
+}
+
+export interface WingetHit {
+  name: string;
+  id: string;
+  version: string;
+}
+
+export type WingetStep = "queued" | "running" | "done" | "failed";
+
+export interface WingetProgress {
+  id: string;
+  state: WingetStep;
+  /** "already" | "reboot" | error text */
+  note: string | null;
+  /** Download progress of the running package, 0..100. */
+  percent?: number | null;
+  /** Bytes downloaded / installer size, when known. */
+  done?: number | null;
+  total?: number | null;
+}
+
 export interface InstallState {
   /** "setup" = not installed here, "uninstall" = started by Windows to remove it, "normal" = usual app. */
   mode: "setup" | "uninstall" | "normal";
@@ -92,6 +119,8 @@ export interface CleanupCategory {
 }
 
 export interface CleanupResult {
+  /** "Stop" was pressed: the rest of the categories were left as they were. */
+  stopped: boolean;
   freed: number;
   deleted: number;
   skipped: number;
@@ -198,6 +227,24 @@ export interface ProgramInfo {
   icon: string;
 }
 
+/** Long operations with a "Stop" button. */
+export type StoppableOp = "diag" | "cleanup" | "speed" | "dupes" | "defender";
+
+/** How a journal entry is put back (only the type matters to the UI). */
+export type JournalUndo = { type: "serviceMode" | "serviceRun" | "startup" | "dns" | "firewall" | "gpuPref" | "gameMode" };
+
+/** One change made by StepMaster ("What StepMaster changed"). */
+export interface JournalEntry {
+  id: number;
+  /** Unix seconds. */
+  at: number;
+  kind: string;
+  target: string;
+  detail: string;
+  undo: JournalUndo | null;
+  reverted: boolean;
+}
+
 export interface UninstallResult {
   finished: boolean;
   leftovers: string[];
@@ -293,6 +340,13 @@ export interface UpdateCheck {
   available: boolean;
 }
 
+/** "What's new" for the update window (from the GitHub release description and banner). */
+export interface UpdateNotes {
+  sections: { title: string; items: string[] }[];
+  /** Banner picture as a data: URL. */
+  image: string | null;
+}
+
 /* ---------- Downloads review ---------- */
 export type DownloadFlag = "installed" | "extracted" | "duplicate" | "partial" | "old";
 export type DownloadCategory =
@@ -366,4 +420,35 @@ export interface DiagProgress {
 export interface FixResult {
   ok: boolean;
   note: string;
+}
+
+// ---------- wallpapers ----------
+export interface WallItem {
+  id: string;
+  name: string;
+  builtin: boolean;
+  path: string;
+  thumb: string;
+  width: number;
+  height: number;
+}
+export interface WallOptions {
+  fit: "fill" | "fit" | "stretch" | "center" | "span";
+  auto: boolean;
+  /** Minutes between changes; 0 = at Windows sign-in. */
+  interval: number;
+  shuffle: boolean;
+  source: "all" | "mine" | "builtin";
+}
+export interface WallState {
+  builtin: WallItem[];
+  mine: WallItem[];
+  current: string | null;
+  options: WallOptions;
+  canRestore: boolean;
+}
+export interface WallAddResult {
+  state: WallState;
+  added: number;
+  failed: string[];
 }

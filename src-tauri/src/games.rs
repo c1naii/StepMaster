@@ -60,6 +60,10 @@ fn state_path(dir: &Path) -> PathBuf {
     dir.join("game-mode.json")
 }
 
+pub fn is_active(dir: &Path) -> bool {
+    load(dir).active
+}
+
 fn load(dir: &Path) -> Saved {
     std::fs::read_to_string(state_path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
@@ -327,6 +331,7 @@ pub async fn game_apply(app: AppHandle, options: Options) -> Res<Status> {
             let _ = std::fs::remove_file(&path);
             return Err(errors.join("; "));
         }
+        crate::journal::add_at(&dir, "game_mode", "", "", Some(crate::journal::Undo::GameMode));
         Ok(status_of(&saved))
     })
     .await
@@ -334,48 +339,70 @@ pub async fn game_apply(app: AppHandle, options: Options) -> Res<Status> {
 
 #[tauri::command]
 pub async fn game_revert(app: AppHandle) -> Res<Status> {
-    util::blocking(move || {
-        let dir = app.state::<AppState>().data_dir.clone();
+    let dir = app.state::<AppState>().data_dir.clone();
+    util::blocking(move || revert_at(&dir)).await
+}
+
+/// Puts back everything game mode changed (also used by uninstall).
+pub fn revert_at(dir: &std::path::Path) -> Res<Status> {
+    {
+        let dir = dir.to_path_buf();
         let saved = load(&dir);
         if !saved.active {
             return Ok(status_of(&saved));
         }
+        if !util::is_admin() {
+            return Err(util::need_admin());
+        }
         let mut errors = Vec::new();
+        // What is still not restored; written back on failure so "Revert" can be retried.
+        let mut left = saved.clone();
         // Restore whatever was saved, even if the step didn't finish (crash mid-apply).
         if let Some(g) = &saved.power_scheme {
             if find_guid(g).is_some() && !set_scheme(g) {
                 errors.push(tr("Не удалось вернуть план питания", "Couldn't restore the power plan"));
+            } else {
+                left.power_scheme = None;
             }
         }
         if let Some(created) = &saved.created_scheme {
-            if find_guid(created).is_some() && saved.power_scheme.as_deref() != Some(created.as_str()) {
-                let _ = util::run_hidden("powercfg.exe", &["/delete", created]);
+            // Never delete the plan we may still be running on.
+            if left.power_scheme.is_none() {
+                if find_guid(created).is_some() && saved.power_scheme.as_deref() != Some(created.as_str()) {
+                    let _ = util::run_hidden("powercfg.exe", &["/delete", created]);
+                }
+                left.created_scheme = None;
             }
         }
         if let Some(prev) = saved.auto_game_mode {
-            if let Err(e) = set_dword(HKEY_CURRENT_USER, GAMEBAR, "AutoGameModeEnabled", prev.restore()) {
-                errors.push(e);
+            match set_dword(HKEY_CURRENT_USER, GAMEBAR, "AutoGameModeEnabled", prev.restore()) {
+                Ok(()) => left.auto_game_mode = None,
+                Err(e) => errors.push(e),
             }
         }
         if let Some(prev) = saved.transparency {
             let _ = set_dword(HKEY_CURRENT_USER, PERSONALIZE, "EnableTransparency", prev.restore());
+            left.transparency = None;
         }
         if let Some(prev) = saved.client_anim {
             set_client_animation(prev);
+            left.client_anim = None;
         }
         if let Some(prev) = &saved.wu_values {
-            if let Err(e) = write_wu(prev) {
-                errors.push(e);
+            match write_wu(prev) {
+                Ok(()) => left.wu_values = None,
+                Err(e) => errors.push(e),
             }
+        }
+        if !errors.is_empty() {
+            write_json(&state_path(&dir), &left)?;
+            return Err(errors.join("; "));
         }
         let cleared = Saved::default();
         write_json(&state_path(&dir), &cleared)?;
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
-        }
+        crate::journal::mark_reverted(&dir, |u| matches!(u, crate::journal::Undo::GameMode));
         Ok(status_of(&cleared))
-    })
-    .await
+    }
 }
 
 /// Known heavy background apps + anything above 500 MB that isn't a system process.
@@ -415,7 +442,7 @@ fn candidates(state: &AppState) -> Vec<ProcessInfo> {
         })
         .map(|(_, p)| p)
         .collect();
-    out.sort_by(|a, b| b.memory.cmp(&a.memory));
+    out.sort_by_key(|x| std::cmp::Reverse(x.memory));
     out
 }
 
@@ -448,26 +475,71 @@ pub fn gpu_prefs() -> Vec<GpuPref> {
 }
 
 #[tauri::command]
-pub fn gpu_pref_set(exe: String, pref: u32) -> Res<()> {
+pub fn gpu_pref_set(app: AppHandle, exe: String, pref: u32) -> Res<()> {
     let p = Path::new(&exe);
     if !p.is_absolute() || !exe.to_lowercase().ends_with(".exe") || !p.is_file() || pref > 2 {
         return Err(tr("Выберите .exe файл игры", "Choose the game's .exe file"));
     }
     let (k, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(GPU_KEY).map_err(|e| e.to_string())?;
-    k.set_value(&exe, &format!("GpuPreference={pref};")).map_err(|e| e.to_string())
+    let old = k.get_value::<String, _>(&exe).ok();
+    let v = merge_gpu(old.as_deref(), Some(pref)).unwrap_or_default();
+    k.set_value(&exe, &v).map_err(|e| e.to_string())?;
+    crate::journal::add(&app, "gpu_pref", &exe, &pref.to_string(), Some(crate::journal::Undo::GpuPref { exe: exe.clone(), value: old }));
+    Ok(())
+}
+
+/// Journal undo: puts the exact previous registry value back (or removes it if there was none).
+pub fn gpu_pref_restore(exe: &str, value: Option<&str>) -> Res<()> {
+    let (k, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(GPU_KEY).map_err(|e| e.to_string())?;
+    match value {
+        Some(v) => k.set_value(exe, &v.to_string()).map_err(|e| e.to_string()),
+        None => match k.delete_value(exe) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// The same registry value also holds other Windows graphics settings for this exe
+/// (VRR, windowed-game optimisations, Auto HDR): change only the GpuPreference token.
+fn merge_gpu(old: Option<&str>, pref: Option<u32>) -> Option<String> {
+    let mut parts: Vec<String> = old
+        .unwrap_or("")
+        .split(';')
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !t.to_ascii_lowercase().starts_with("gpupreference="))
+        .map(String::from)
+        .collect();
+    if let Some(p) = pref {
+        parts.insert(0, format!("GpuPreference={p}"));
+    }
+    (!parts.is_empty()).then(|| parts.iter().map(|t| format!("{t};")).collect())
 }
 
 #[tauri::command]
-pub fn gpu_pref_remove(exe: String) -> Res<()> {
+pub fn gpu_pref_remove(app: AppHandle, exe: String) -> Res<()> {
     let k = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags(GPU_KEY, KEY_READ | KEY_WRITE)
         .map_err(|e| e.to_string())?;
-    k.delete_value(&exe).map_err(|e| e.to_string())
+    let old = k.get_value::<String, _>(&exe).ok();
+    match merge_gpu(old.as_deref(), None) {
+        Some(rest) => k.set_value(&exe, &rest).map_err(|e| e.to_string())?,
+        None => k.delete_value(&exe).map_err(|e| e.to_string())?,
+    }
+    crate::journal::add(&app, "gpu_pref_remove", &exe, "", Some(crate::journal::Undo::GpuPref { exe: exe.clone(), value: old }));
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gpu_tokens_kept() {
+        assert_eq!(merge_gpu(None, Some(2)).as_deref(), Some("GpuPreference=2;"));
+        assert_eq!(merge_gpu(Some("SwapEffectUpgradeEnable=1;GpuPreference=1;"), Some(2)).as_deref(), Some("GpuPreference=2;SwapEffectUpgradeEnable=1;"));
+        assert_eq!(merge_gpu(Some("GpuPreference=1;VRROptimizeEnable=0;"), None).as_deref(), Some("VRROptimizeEnable=0;"));
+        assert_eq!(merge_gpu(Some("GpuPreference=1;"), None), None);
+    }
     #[test]
     fn guid() {
         assert_eq!(

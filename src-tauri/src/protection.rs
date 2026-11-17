@@ -50,7 +50,7 @@ try { $fw = @(Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object { [pscus
 $av = @()
 try {
   $av = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop |
-    Where-Object { $_.displayName -notmatch 'Defender' -and ((([int]$_.productState) -band 0x1000) -ne 0) } |
+    Where-Object { $_.displayName -notmatch '^(Windows|Microsoft) Defender' -and ((([int]$_.productState) -band 0x1000) -ne 0) } |
     ForEach-Object { [string]$_.displayName })
 } catch {}
 [pscustomobject]@{ defender=$d; otherAntivirus=$av; firewall=$fw } | ConvertTo-Json -Depth 4 -Compress
@@ -62,24 +62,38 @@ try {
 
 #[tauri::command]
 pub async fn defender_quick_scan() -> Res<()> {
-    util::blocking(|| util::ps("Start-MpScan -ScanType QuickScan").map(|_| ())).await
+    let running = crate::ops::start(crate::ops::Op::Defender)?;
+    util::blocking(move || {
+        let _running = running;
+        util::ps_cancel("Start-MpScan -ScanType QuickScan", 1800, crate::ops::Op::Defender).map(|_| ())
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn defender_update() -> Res<()> {
-    util::blocking(|| util::ps("Update-MpSignature").map(|_| ())).await
+    util::blocking(|| util::ps_timeout("Update-MpSignature", 300).map(|_| ())).await
 }
 
 #[tauri::command]
-pub async fn firewall_set(enabled: bool) -> Res<()> {
+pub async fn firewall_set(app: tauri::AppHandle, enabled: bool) -> Res<()> {
     if !util::is_admin() {
         return Err(util::need_admin());
     }
     let v = if enabled { "True" } else { "False" };
     util::blocking(move || {
+        // Remember each profile's state, so the journal can put exactly that back.
+        let before: Vec<(String, bool)> = util::ps_json_timeout::<Vec<(String, bool)>>(
+            "ConvertTo-Json -Compress -InputObject @(Get-NetFirewallProfile | ForEach-Object { ,@([string]$_.Name, ([string]$_.Enabled -eq 'True')) })",
+            30,
+        )
+        .unwrap_or_default();
         util::ps(&format!("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled {v}"))
             .map(|_| ())
-            .map_err(|e| format!("{}: {e}", tr("Не удалось изменить брандмауэр", "Couldn't change the firewall")))
+            .map_err(|e| format!("{}: {e}", tr("Не удалось изменить брандмауэр", "Couldn't change the firewall")))?;
+        let undo = (!before.is_empty()).then_some(crate::journal::Undo::Firewall { profiles: before });
+        crate::journal::add(&app, if enabled { "firewall_on" } else { "firewall_off" }, "", "", undo);
+        Ok(())
     })
     .await
 }

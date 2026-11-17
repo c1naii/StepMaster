@@ -2,10 +2,10 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { fmt, useT } from "../i18n";
-import { api, errorText, on, pickPath, win } from "../lib/api";
-import type { InstallState } from "../lib/types";
+import { api, errorText, pickPath, win, subscribe } from "../lib/api";
+import type { InstallState, Lang } from "../lib/types";
 import { useStore } from "../lib/store";
-import { Checkbox, Spinner, useCalm } from "./ui";
+import { Checkbox, Spinner, Tabs, useCalm } from "./ui";
 
 const STEPS = ["copy", "register", "shortcuts", "launch"] as const;
 type Step = (typeof STEPS)[number];
@@ -16,12 +16,44 @@ export function finalDir(dir: string): string {
   return /(^|\\)stepmaster$/i.test(d) ? d : `${d}\\StepMaster`;
 }
 
+/** RU / EN right in the setup and uninstall windows. Saved to settings, so the installed
+ *  program opens in the language chosen here. */
+function LangSwitch() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const change = async (language: Lang) => {
+    if (language === settings.language) return;
+    const prev = settings;
+    const next = { ...settings, language };
+    setSettings(next); // switch at once
+    try {
+      setSettings(await api.settingsSet(next));
+    } catch {
+      // Could not save (e.g. no rights yet): keep the choice for this window anyway.
+      setSettings({ ...prev, language });
+    }
+  };
+  return (
+    <div className="installer-lang">
+      <Tabs
+        value={settings.language}
+        onChange={(v) => void change(v)}
+        items={[
+          { id: "ru", label: "RU" },
+          { id: "en", label: "EN" },
+        ]}
+      />
+    </div>
+  );
+}
+
 function Frame({ children }: { children: React.ReactNode }) {
   const t = useT();
   const calm = useCalm();
   return (
     <div className="installer">
       <header className="installer-bar">
+        <LangSwitch />
         <div className="titlebar-drag" data-tauri-drag-region />
         <button className="window-btn close" aria-label={t.shell.closeWindow} onClick={() => void win.close()}>
           <X size={17} strokeWidth={1.6} />
@@ -59,7 +91,7 @@ function Setup({ state }: { state: InstallState }) {
 
   useEffect(() => {
     let off: (() => void) | undefined;
-    void on<{ step: Step }>("install://progress", (p) => setStep(p.step)).then((u) => (off = u));
+    off = subscribe<{ step: Step }>("install://progress", (p) => setStep(p.step));
     return () => off?.();
   }, []);
 

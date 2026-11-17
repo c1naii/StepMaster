@@ -242,7 +242,8 @@ pub fn evaluate(ps: &PsRaw, l: &LocalRaw) -> (Vec<Issue>, Vec<CheckRow>, u32) {
     } else {
         o.ok("memory", c);
     }
-    if l.sys_free_pct < 10 || l.sys_free_bytes < 10 * GB {
+    // On big drives 9% can still be hundreds of GB: then it is not a problem.
+    if (l.sys_free_pct < 10 && l.sys_free_bytes < 50 * GB) || l.sys_free_bytes < 10 * GB {
         let sev = if l.sys_free_pct < 5 || l.sys_free_bytes < 3 * GB { "high" } else { "medium" };
         o.issue("disk_space", c, sev, &[("drive", l.sys_drive.clone()), ("free", gb(l.sys_free_bytes)), ("pct", l.sys_free_pct.to_string())], vec![], Some("cleanup_safe"), vec![], Some("nav:disk"));
     } else {
@@ -277,8 +278,9 @@ pub fn evaluate(ps: &PsRaw, l: &LocalRaw) -> (Vec<Issue>, Vec<CheckRow>, u32) {
     /* ---------- heat ---------- */
     let c = "thermal";
     match ps.thermal_c {
-        Some(t) if t >= 90.0 => o.issue("cpu_temp", c, "critical", &[("temp", format!("{t:.0}"))], vec![], None, vec![], None),
-        Some(t) if t >= 80.0 => o.issue("cpu_temp", c, "high", &[("temp", format!("{t:.0}"))], vec![], None, vec![], None),
+        // ACPI thermal zones are not always the CPU sensor, so this is never "critical".
+        Some(t) if t >= 90.0 => o.issue("cpu_temp", c, "high", &[("temp", format!("{t:.0}"))], vec![], None, vec![], None),
+        Some(t) if t >= 80.0 => o.issue("cpu_temp", c, "medium", &[("temp", format!("{t:.0}"))], vec![], None, vec![], None),
         Some(_) => o.ok("cpu_temp", c),
         None => o.skip("cpu_temp", c),
     }
@@ -324,7 +326,8 @@ pub fn evaluate(ps: &PsRaw, l: &LocalRaw) -> (Vec<Issue>, Vec<CheckRow>, u32) {
     let mut disk_bad: Vec<String> = ps.smart_fail.iter().map(|n| format!("SMART: {n}")).collect();
     let mut disk_warn: Vec<String> = Vec::new();
     for d in &ps.disks {
-        if !d.health.is_empty() && !d.health.eq_ignore_ascii_case("healthy") {
+        // "Unknown" is normal for many NVMe/USB/RAID disks; only Warning/Unhealthy are real problems.
+        if d.health.eq_ignore_ascii_case("warning") || d.health.eq_ignore_ascii_case("unhealthy") {
             disk_bad.push(format!("{} — {}", d.name, d.health));
         }
         if let Some(w) = d.wear {
@@ -335,7 +338,8 @@ pub fn evaluate(ps: &PsRaw, l: &LocalRaw) -> (Vec<Issue>, Vec<CheckRow>, u32) {
             }
         }
         if let Some(e) = d.read_errors {
-            if e > 0.0 {
+            // Lifetime counter: a few old errors are normal, warn only when there are many.
+            if e >= 10.0 {
                 disk_warn.push(format!("{} — read errors: {e:.0}", d.name));
             }
         }
@@ -707,11 +711,11 @@ if ($mp) {
 }
 $r.defender = [pscustomobject]$d
 $r.otherAv = @()
-try { $r.otherAv = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | Where-Object { $_.displayName -notmatch 'Defender' -and ((([int]$_.productState) -band 0x1000) -ne 0) } | ForEach-Object { [string]$_.displayName }) } catch {}
+try { $r.otherAv = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | Where-Object { $_.displayName -notmatch '^(Windows|Microsoft) Defender' -and ((([int]$_.productState) -band 0x1000) -ne 0) } | ForEach-Object { [string]$_.displayName }) } catch {}
 $r.otherFirewall = @()
-try { $r.otherFirewall = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction Stop | Where-Object { ((([int]$_.productState) -band 0x1000) -ne 0) } | ForEach-Object { [string]$_.displayName }) } catch {}
+try { $r.otherFirewall = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction Stop | Where-Object { $_.displayName -notmatch '^(Windows|Microsoft Defender) Firewall' -and ((([int]$_.productState) -band 0x1000) -ne 0) } | ForEach-Object { [string]$_.displayName }) } catch {}
 $r.firewallOff = @()
-try { $r.firewallOff = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { [string]$_.Enabled -ne 'True' } | ForEach-Object { [string]$_.Name }) } catch {}
+try { $r.firewallOff = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { [string]$_.Enabled -eq 'False' } | ForEach-Object { [string]$_.Name }) } catch {}
 $r.tasks = @()
 try {
   $r.tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.State -ne 'Disabled' -and $_.TaskPath -notlike '\Microsoft\*' } | ForEach-Object {
@@ -820,7 +824,7 @@ fn collect_local(state: &AppState, defender_scanned: bool) -> LocalRaw {
     let mut procs = crate::system::list_processes(state);
     procs.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal));
     l.top_cpu = procs.iter().take(5).map(|p| format!("{} — {:.0}%", p.name, p.cpu)).collect();
-    procs.sort_by(|a, b| b.memory.cmp(&a.memory));
+    procs.sort_by_key(|x| std::cmp::Reverse(x.memory));
     l.top_mem = procs.iter().take(5).map(|p| format!("{} — {} MB", p.name, p.memory / 1024 / 1024)).collect();
     l.uptime_days = sysinfo::System::uptime() / 86400;
 
@@ -828,7 +832,7 @@ fn collect_local(state: &AppState, defender_scanned: bool) -> LocalRaw {
     let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
     l.sys_drive = sys_drive.trim_end_matches(':').to_string();
     for d in crate::system::list_disks_raw() {
-        if d.0.to_uppercase().starts_with(&sys_drive.to_uppercase()) && d.1 > 0 {
+        if d.0.trim_end_matches('\\').eq_ignore_ascii_case(sys_drive.trim_end_matches('\\')) && d.1 > 0 {
             l.sys_free_bytes = d.2;
             l.sys_free_pct = (d.2 as f64 / d.1 as f64 * 100.0).round() as u32;
         }
@@ -895,7 +899,10 @@ fn report_path(dir: &Path) -> PathBuf {
 
 #[tauri::command]
 pub async fn diag_run(app: AppHandle, defender_scan: bool) -> Res<Report> {
+    use crate::ops::{self, Op};
     let started = Instant::now();
+    let _running = ops::start(Op::Diag)?;
+    let stop = || if ops::cancelled(Op::Diag) { Err(ops::stopped()) } else { Ok(()) };
     let total = if defender_scan { 4 } else { 3 };
     let emit = |app: &AppHandle, step: &'static str, done: u32| {
         let _ = app.emit("diag://progress", Progress { step, done, total });
@@ -905,13 +912,16 @@ pub async fn diag_run(app: AppHandle, defender_scan: bool) -> Res<Report> {
     if defender_scan {
         emit(&app, "defender", done);
         // A failed scan (Defender off, another antivirus) must not stop the diagnosis.
-        scanned = util::blocking(|| util::ps("Start-MpScan -ScanType QuickScan").map(|_| ())).await.is_ok();
+        ops::DIAG_IN_DEFENDER.store(true, std::sync::atomic::Ordering::SeqCst);
+        scanned = util::blocking(|| util::ps_cancel("Start-MpScan -ScanType QuickScan", 1800, Op::Diag).map(|_| ())).await.is_ok();
+        ops::DIAG_IN_DEFENDER.store(false, std::sync::atomic::Ordering::SeqCst);
+        stop()?;
         done += 1;
     }
     emit(&app, "system", done);
     // If PowerShell fails or hangs (killed after 2 min), its checks are reported as skipped.
     let ps: PsRaw = util::blocking(|| {
-        Ok(match util::ps_json_timeout::<PsRaw>(PS_SCRIPT, 120) {
+        Ok(match util::ps_json_cancel::<PsRaw>(PS_SCRIPT, 120, Op::Diag) {
             Ok(mut raw) => {
                 raw.ok = true;
                 raw
@@ -920,10 +930,12 @@ pub async fn diag_run(app: AppHandle, defender_scan: bool) -> Res<Report> {
         })
     })
     .await?;
+    stop()?;
     done += 1;
     emit(&app, "performance", done);
     let app2 = app.clone();
     let local = util::blocking(move || Ok(collect_local(&app2.state::<AppState>(), scanned))).await?;
+    stop()?;
     done += 1;
     emit(&app, "evaluate", done);
     let (issues, checks, score) = evaluate(&ps, &local);
@@ -1015,6 +1027,8 @@ pub struct FixResult {
 #[tauri::command]
 pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<FixResult> {
     let data_dir = app.state::<AppState>().data_dir.clone();
+    let journal_dir = data_dir.clone();
+    let fix_id = fix.clone();
     util::blocking(move || {
         let note = match fix.as_str() {
             "cleanup_safe" => {
@@ -1029,7 +1043,7 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                 String::new()
             }
             "update_signatures" => {
-                util::ps("Update-MpSignature")?;
+                util::ps_timeout("Update-MpSignature", 300)?;
                 String::new()
             }
             "remove_threats" => {
@@ -1055,7 +1069,7 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                 String::new()
             }
             "quick_scan" => {
-                util::ps("Start-MpScan -ScanType QuickScan")?;
+                util::ps_timeout("Start-MpScan -ScanType QuickScan", 1800)?;
                 String::new()
             }
             "enable_firewall" => {
@@ -1117,12 +1131,13 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                     .take(20)
                     .collect();
                 for p in paths {
-                    util::ps(&format!("Start-MpScan -ScanType CustomScan -ScanPath {}", psq(p)))?;
+                    util::ps_timeout(&format!("Start-MpScan -ScanType CustomScan -ScanPath {}", psq(p)), 1800)?;
                 }
                 String::new()
             }
             _ => return Err(tr("Неизвестное исправление", "Unknown fix")),
         };
+        crate::journal::add_at(&journal_dir, "diag_fix", &fix_id, &note, None);
         Ok(FixResult { ok: true, note })
     })
     .await

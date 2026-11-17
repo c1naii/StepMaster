@@ -11,7 +11,7 @@ export async function recycle(paths: string[], t: Dict, lang: Lang): Promise<str
   const ok = await ask({
     title: t.disk.recycleTitle,
     text: fmt(t.disk.recycleText, { n: countOf(paths.length, t.common.items, lang) }),
-    details: paths.slice(0, 50),
+    details: paths, // the full list: the user must see everything that will be moved
     confirmLabel: t.common.toRecycle,
     cancelLabel: t.common.cancel,
     danger: true,

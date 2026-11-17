@@ -55,7 +55,7 @@ fn main_exe_in(dir: &Path, hint: &str) -> Option<PathBuf> {
     }) {
         return Some(m.0.clone());
     }
-    exes.sort_by(|a, b| b.1.cmp(&a.1));
+    exes.sort_by_key(|x| std::cmp::Reverse(x.1));
     Some(exes[0].0.clone())
 }
 
@@ -332,7 +332,7 @@ ConvertTo-Json -Compress -InputObject @(Get-AppxPackage | Where-Object { -not $_
     display=[string]$start[[string]$_.PackageFamilyName]; publisher=([string]$_.Publisher -replace '^CN=([^,]+).*','$1');
     version=[string]$_.Version; location=[string]$_.InstallLocation } })
 "#;
-    let raw: Vec<StoreRaw> = util::ps_json(script).unwrap_or_default();
+    let raw: Vec<StoreRaw> = util::ps_json_timeout(script, 60).unwrap_or_default();
     // Only packages with a Start menu entry are real apps. The rest are runtimes, codecs and
     // language packs that other apps depend on — removing them would break things.
     raw.into_iter()
@@ -705,11 +705,12 @@ fn expand_env(s: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn program_uninstall(app: AppHandle, id: String) -> Res<UninstallResult> {
+pub async fn program_uninstall(app: AppHandle, id: String, name: Option<String>) -> Res<UninstallResult> {
     if !util::is_admin() {
         return Err(util::need_admin());
     }
-    util::blocking(move || {
+    let app2 = app.clone();
+    let r = util::blocking(move || {
         let state = app.state::<AppState>();
         let parts: Vec<&str> = id.splitn(4, '|').collect();
         match parts.as_slice() {
@@ -739,7 +740,12 @@ pub async fn program_uninstall(app: AppHandle, id: String) -> Res<UninstallResul
             _ => Err(tr("Неверная программа", "Invalid program")),
         }
     })
-    .await
+    .await?;
+    if r.finished {
+        let shown: String = name.unwrap_or_default().chars().filter(|c| !c.is_control()).take(200).collect();
+        crate::journal::add(&app2, "uninstall", &shown, "", None);
+    }
+    Ok(r)
 }
 
 #[cfg(test)]

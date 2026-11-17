@@ -113,6 +113,10 @@ fn delete_inner(dir: &Path, canon_root: &Path, min_age: Option<Duration>, d: &mu
     }
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
+        // "Stop" pressed in Cleanup: leave the rest as it is.
+        if crate::ops::cancelled(crate::ops::Op::Cleanup) {
+            return;
+        }
         let path = e.path();
         let Ok(md) = e.metadata() else {
             d.skipped += 1;

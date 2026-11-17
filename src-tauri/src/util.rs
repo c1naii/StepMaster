@@ -124,16 +124,25 @@ pub fn psq(s: &str) -> String {
 /// Run a PowerShell script (Windows PowerShell 5.1, always present on Win10/11).
 /// Errors thrown in the script come back as Err(message). Output is UTF-8.
 pub fn ps(script: &str) -> Res<String> {
-    ps_inner(script, None)
+    ps_inner(script, None, None)
+}
+
+/// Like `ps_timeout`, but also stops PowerShell as soon as the operation's "Stop" flag is raised.
+pub fn ps_cancel(script: &str, secs: u64, op: crate::ops::Op) -> Res<String> {
+    ps_inner(script, Some(std::time::Duration::from_secs(secs)), Some(crate::ops::flag(op)))
+}
+
+pub fn ps_json_cancel<T: serde::de::DeserializeOwned>(script: &str, secs: u64, op: crate::ops::Op) -> Res<T> {
+    parse_ps_json(&ps_cancel(script, secs, op)?)
 }
 
 /// Like `ps`, but kills PowerShell if it runs longer than `secs` (a hung WMI/storage call
 /// must never freeze the app).
 pub fn ps_timeout(script: &str, secs: u64) -> Res<String> {
-    ps_inner(script, Some(std::time::Duration::from_secs(secs)))
+    ps_inner(script, Some(std::time::Duration::from_secs(secs)), None)
 }
 
-fn ps_inner(script: &str, timeout: Option<std::time::Duration>) -> Res<String> {
+fn ps_inner(script: &str, timeout: Option<std::time::Duration>, cancel: Option<&std::sync::atomic::AtomicBool>) -> Res<String> {
     let full = format!(
         "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
          [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
@@ -159,14 +168,28 @@ fn ps_inner(script: &str, timeout: Option<std::time::Duration>) -> Res<String> {
             std::thread::spawn(move || {
                 let _ = tx.send(child.wait_with_output());
             });
-            match rx.recv_timeout(limit) {
-                Ok(r) => r.map_err(|e| format!("PowerShell: {e}"))?,
-                Err(_) => {
-                    let _ = Command::new(sys_tool("taskkill.exe"))
-                        .args(["/PID", &pid.to_string(), "/T", "/F"])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
+            let kill = || {
+                let _ = Command::new(sys_tool("taskkill.exe"))
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            };
+            let start = std::time::Instant::now();
+            // Wait in short slices so a "Stop" request is noticed quickly.
+            loop {
+                if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+                    kill();
+                    return Err(crate::ops::stopped());
+                }
+                let left = limit.saturating_sub(start.elapsed());
+                if left.is_zero() {
+                    kill();
                     return Err(tr("Проверка заняла слишком много времени", "The check took too long"));
+                }
+                match rx.recv_timeout(left.min(std::time::Duration::from_millis(250))) {
+                    Ok(r) => break r.map_err(|e| format!("PowerShell: {e}"))?,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => return Err(tr("Ошибка PowerShell", "PowerShell error")),
                 }
             }
         }
@@ -272,7 +295,7 @@ pub fn is_protected_path(p: &Path) -> bool {
             exact.push(norm(users));
         }
     }
-    if exact.iter().any(|e| *e == n) {
+    if exact.contains(&n) {
         return true;
     }
     // Special system entries at the drive root.

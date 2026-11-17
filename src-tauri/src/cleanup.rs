@@ -100,7 +100,13 @@ fn targets(id: &str) -> Vec<Target> {
     let mut t = Vec::new();
     match id {
         "user_temp" => {
-            if let Some(p) = env_path("TEMP") {
+            // TEMP can be pointed anywhere (a launcher, a script): trust it only inside
+            // %LOCALAPPDATA%, otherwise use the standard %LOCALAPPDATA%\Temp.
+            let std_temp = local.as_ref().map(|l| l.join("Temp"));
+            let p = env_path("TEMP")
+                .filter(|t| local.as_ref().is_some_and(|l| t.starts_with(l)))
+                .or(std_temp);
+            if let Some(p) = p {
                 t.push(Target::Dir(p, Some(TEMP_MIN_AGE)));
             }
         }
@@ -209,6 +215,9 @@ fn target_clean(t: &Target) -> Deleted {
         Target::Files(dir, pre, suf) => {
             let mut d = Deleted::default();
             for (f, len) in fsops::matching_files(dir, pre, suf) {
+                if crate::ops::cancelled(crate::ops::Op::Cleanup) {
+                    break;
+                }
                 if std::fs::remove_file(&f).is_ok() {
                     d.freed += len;
                     d.deleted += 1;
@@ -301,6 +310,7 @@ pub struct PerCategory {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanResult {
+    stopped: bool,
     freed: u64,
     deleted: u64,
     skipped: u64,
@@ -314,7 +324,12 @@ pub async fn cleanup_run(app: AppHandle, ids: Vec<String>) -> Res<CleanResult> {
         let admin = util::is_admin();
         let mut total = Deleted::default();
         let mut per = Vec::new();
+        crate::ops::begin(crate::ops::Op::Cleanup);
         for id in ids.iter().filter(|i| IDS.contains(&i.as_str())) {
+            // "Stop": finish the file being deleted, skip the rest (what was freed is still reported).
+            if crate::ops::cancelled(crate::ops::Op::Cleanup) {
+                break;
+            }
             let _ = app.emit("cleanup://progress", Progress { id: id.clone(), phase: "start" });
             let mut d = Deleted::default();
             if !(needs_admin(id) && !admin) {
@@ -326,10 +341,14 @@ pub async fn cleanup_run(app: AppHandle, ids: Vec<String>) -> Res<CleanResult> {
             per.push(PerCategory { id: id.clone(), freed: d.freed });
             let _ = app.emit("cleanup://progress", Progress { id: id.clone(), phase: "done" });
         }
+        let stopped = crate::ops::cancelled(crate::ops::Op::Cleanup);
+        crate::ops::begin(crate::ops::Op::Cleanup); // don't leave the flag up for other cleaners
         if total.freed > 0 {
             add_history(&data_dir, total.freed);
+            crate::journal::add_at(&data_dir, "cleanup", "", &total.freed.to_string(), None);
         }
-        Ok(CleanResult { freed: total.freed, deleted: total.deleted, skipped: total.skipped, per_category: per })
+        Ok(CleanResult {
+            stopped, freed: total.freed, deleted: total.deleted, skipped: total.skipped, per_category: per })
     })
     .await
 }
@@ -354,6 +373,8 @@ pub fn safe_junk_size(admin: bool) -> u64 {
 
 /// Cleans the safe categories; returns bytes freed (also recorded in history).
 pub fn clean_safe(data_dir: &Path, admin: bool) -> u64 {
+    // A late "Stop" from the Cleanup page must not silently skip this (shared delete code).
+    crate::ops::begin(crate::ops::Op::Cleanup);
     let mut total = Deleted::default();
     for id in safe_ids(admin) {
         for t in targets(id) {

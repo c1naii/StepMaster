@@ -1,4 +1,5 @@
-import { AlertCircle, CheckCircle2, Download, FolderOpen, RefreshCw } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, FolderOpen, Keyboard, RefreshCw } from "lucide-react";
+import { HotkeysDialog } from "./HotkeysDialog";
 import { useState } from "react";
 import { PageHeader, Spinner, Tabs, Toggle, notify } from "../../components/ui";
 import { fmt, useT } from "../../i18n";
@@ -14,6 +15,7 @@ export function SettingsPage() {
   const setSettings = useStore((s) => s.setSettings);
   const app = useStore((s) => s.app);
   const [saving, setSaving] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   const [checking, setChecking] = useState(false);
   const [upd, setUpd] = useState<{ kind: "none" | "available" | "error"; msg?: string } | null>(null);
 
@@ -105,6 +107,10 @@ export function SettingsPage() {
           <div className="setting-text">
             <div className="setting-title">{t.settings.hotkey}</div>
             <div className="setting-desc">{t.settings.hotkeyDesc}</div>
+            <button className="link setting-link" onClick={() => setShowKeys(true)}>
+              <Keyboard size={13} />
+              {t.settings.hotkeysAll}
+            </button>
           </div>
           <select
             className="select"
@@ -171,6 +177,17 @@ export function SettingsPage() {
             {fmt(t.settings.version, { v: app?.version ?? "—" })}
             {app ? ` · ${app.osName} (${app.osBuild})` : ""}
           </div>
+          {app ? (
+            <div className="small muted row" style={{ gap: 8, marginTop: 4 }}>
+              <span className={`dot ${app.isAdmin ? "" : "warn"}`} />
+              {app.isAdmin ? t.shell.admin : t.shell.notAdmin}
+              {!app.isAdmin ? (
+                <button className="btn btn-ghost sm" onClick={() => void api.relaunchAsAdmin().catch(notify.err)}>
+                  {t.shell.restartAdmin}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <button className="btn btn-secondary" disabled={checking} onClick={() => void checkUpdates()}>
           {checking ? <Spinner /> : <RefreshCw size={15} />}
@@ -194,6 +211,7 @@ export function SettingsPage() {
           ) : null}
         </div>
       ) : null}
+      <HotkeysDialog open={showKeys} onClose={() => setShowKeys(false)} />
     </>
   );
 }

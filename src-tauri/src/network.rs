@@ -36,7 +36,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject @(Get-NetAdapter -ErrorAction Sil
   [pscustomobject]@{
     name=[string]$a.Name; description=[string]$a.InterfaceDescription; status=[string]$a.Status; kind=$kind
     mac=[string]$a.MacAddress; linkSpeed=[string]$a.LinkSpeed
-    ipv4=@($c.IPv4Address | ForEach-Object { [string]$_.IPAddress })
+    ipv4=@($c.IPv4Address | Where-Object { $_ } | ForEach-Object { [string]$_.IPAddress })
     gateway=[string](@($c.IPv4DefaultGateway | ForEach-Object { $_.NextHop }) | Select-Object -First 1)
     dns=@($c.DNSServer | Where-Object { $_.AddressFamily -eq 2 } | ForEach-Object { $_.ServerAddresses } | ForEach-Object { [string]$_ })
   } })
@@ -60,7 +60,7 @@ pub async fn dns_flush() -> Res<()> {
 }
 
 #[tauri::command]
-pub async fn dns_set(preset: String) -> Res<()> {
+pub async fn dns_set(app: AppHandle, preset: String) -> Res<()> {
     if !util::is_admin() {
         return Err(util::need_admin());
     }
@@ -77,21 +77,37 @@ pub async fn dns_set(preset: String) -> Res<()> {
         Some(s) => format!("Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @({s})"),
     };
     let script = format!(
-        "$n = 0; Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' }} | ForEach-Object {{ {action}; $n++ }}; \
-         Clear-DnsClientCache; if ($n -eq 0) {{ throw '{}' }}",
+        // Only real network cards: changing DNS on a VPN/virtual adapter breaks the VPN or leaks DNS.
+        // One adapter refusing must not stop the others.
+        "$n = 0; $prev = @(); Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' -and \
+         $_.InterfaceDescription -notmatch 'VPN|TAP-|WireGuard|Wintun|Loopback|\\bTUN\\b' }} | \
+         ForEach-Object {{ $key = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\' + $_.InterfaceGuid; \
+           $ns = [string](Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).NameServer; \
+           try {{ {action} -ErrorAction Stop; $prev += ,@([int]$_.ifIndex, $ns); $n++ }} catch {{}} }}; \
+         Clear-DnsClientCache; if ($n -eq 0) {{ throw '{}' }}; ConvertTo-Json -Compress -InputObject @($prev)",
         tr("Нет активных подключений", "No active connections")
     );
-    util::blocking(move || util::ps(&script).map(|_| ())).await
+    let preset_name = preset.clone();
+    util::blocking(move || {
+        // Each adapter's previous static DNS ("" = automatic): the journal can put exactly that back.
+        let prev: Vec<(u32, String)> = util::ps_json(&script)?;
+        crate::journal::add(&app, "dns", "", &preset_name, Some(crate::journal::Undo::Dns { adapters: prev }));
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn network_reset() -> Res<()> {
+pub async fn network_reset(app: AppHandle) -> Res<()> {
     if !util::is_admin() {
         return Err(util::need_admin());
     }
-    util::blocking(|| {
+    util::blocking(move || {
         let (ok1, o1, e1) = util::run_hidden("netsh.exe", &["winsock", "reset"])?;
         let (ok2, o2, e2) = util::run_hidden("netsh.exe", &["int", "ip", "reset"])?;
+        if ok1 || ok2 {
+            crate::journal::add(&app, "network_reset", "", "", None);
+        }
         if ok1 && ok2 {
             Ok(())
         } else {
@@ -131,6 +147,31 @@ fn net_err(e: reqwest::Error) -> String {
 
 #[tauri::command]
 pub async fn speed_test(app: AppHandle) -> Res<SpeedResult> {
+    use crate::ops::{self, Op};
+    let _running = ops::start(Op::Speed)?;
+    // "Stop" ends the test at once: the measuring future is dropped (its download tasks abort).
+    let watch = async {
+        while !ops::cancelled(Op::Speed) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    let test = speed_inner(&app);
+    futures_util::pin_mut!(watch, test);
+    match futures_util::future::select(test, watch).await {
+        futures_util::future::Either::Left((r, _)) => r,
+        futures_util::future::Either::Right(_) => Err(ops::stopped()),
+    }
+}
+
+/// Download tasks are aborted when the test ends early (Stop / error), not left running.
+struct AbortOnDrop(Vec<tokio::task::JoinHandle<()>>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.iter().for_each(|t| t.abort());
+    }
+}
+
+async fn speed_inner(app: &AppHandle) -> Res<SpeedResult> {
     let c = client()?;
 
     // Ping: median of small requests on a warm connection.
@@ -168,15 +209,14 @@ pub async fn speed_test(app: AppHandle) -> Res<SpeedResult> {
             }
         }));
     }
-    while tasks.iter().any(|t| !t.is_finished()) && start.elapsed() < limit + Duration::from_secs(2) {
+    let tasks = AbortOnDrop(tasks);
+    while tasks.0.iter().any(|t| !t.is_finished()) && start.elapsed() < limit + Duration::from_secs(2) {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let secs = start.elapsed().as_secs_f64().max(0.001);
         let mbps = total.load(Ordering::Relaxed) as f64 * 8.0 / secs / 1_000_000.0;
         let _ = app.emit("speed://progress", SpeedProgress { phase: "download", value: mbps });
     }
-    for t in &tasks {
-        t.abort();
-    }
+    drop(tasks);
     let down_secs = start.elapsed().as_secs_f64().min(limit.as_secs_f64()).max(0.001);
     let down = total.load(Ordering::Relaxed) as f64 * 8.0 / down_secs / 1_000_000.0;
     if total.load(Ordering::Relaxed) == 0 {

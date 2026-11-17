@@ -226,7 +226,10 @@ pub async fn icons_get(app: AppHandle, specs: Vec<String>) -> Res<HashMap<String
                 continue;
             }
             let v = icon_for(&spec);
-            state.icons.lock().insert(spec.clone(), v.clone());
+            // Only found icons are cached: a missing one may appear later (app still installing).
+            if v.is_some() {
+                state.icons.lock().insert(spec.clone(), v.clone());
+            }
             out.insert(spec, v);
         }
         Ok(out)

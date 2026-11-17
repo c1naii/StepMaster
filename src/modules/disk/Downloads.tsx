@@ -28,6 +28,7 @@ export function Downloads() {
   const [category, setCategory] = useState<DownloadCategory | "any">("any");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const seq = useRef(0);
+  const [recycling, setRecycling] = useState(false);
 
   const scan = async (p: Place, force = false) => {
     const my = ++seq.current;
@@ -35,6 +36,7 @@ export function Downloads() {
     setSelected(new Set());
     if (!force && cache.has(p)) {
       setReport(cache.get(p)!);
+      setLoading(false); // an older scan may still be running: its result is ignored now
       return;
     }
     setLoading(true);
@@ -83,8 +85,10 @@ export function Downloads() {
   };
 
   const doRecycle = async () => {
+    if (recycling) return;
     const paths = selectedItems.map((i) => i.path);
-    const done = await recycle(paths, t, lang);
+    setRecycling(true);
+    const done = await recycle(paths, t, lang).finally(() => setRecycling(false));
     if (done.length === 0) return;
     const gone = new Set(done);
     const next = { ...(report as DownloadsReport) };
@@ -177,7 +181,7 @@ export function Downloads() {
         <button className="btn btn-ghost sm" disabled={shown.length === 0} onClick={() => setSelected(allSelected ? new Set() : new Set(shown.map((i) => i.path)))}>
           {allSelected ? t.disk.dlSelectNone : t.disk.dlSelectAll}
         </button>
-        <button className="btn btn-danger sm" disabled={selectedItems.length === 0} onClick={() => void doRecycle()}>
+        <button className="btn btn-danger sm" disabled={selectedItems.length === 0 || recycling} onClick={() => void doRecycle()}>
           <Trash2 size={14} />
           {fmt(t.disk.dlRecycle, { n: selectedItems.length, size: formatBytes(sum(selectedItems), lang) })}
         </button>

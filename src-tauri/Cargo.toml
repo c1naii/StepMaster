@@ -1,6 +1,6 @@
 [package]
 name = "stepmaster"
-version = "1.0.5"
+version = "1.0.6"
 description = "StepMaster - Windows toolkit"
 edition = "2021"
 rust-version = "1.80"
@@ -36,6 +36,7 @@ blake3 = "1"
 parking_lot = "0.12"
 once_cell = "1"
 png = "0.18"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
 
 [dependencies.windows-sys]
 version = "0.59"

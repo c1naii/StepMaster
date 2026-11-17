@@ -64,7 +64,11 @@ Write-Host "Done: $root\$name"
 if ($Publish) {
   $repo = (Select-String -Path src-tauri\src\updater.rs -Pattern 'pub const REPO: &str = "([^"]*)"').Matches[0].Groups[1].Value
   if (-not $repo) { throw "Set REPO in src-tauri/src/updater.rs first" }
-  gh release create "v$ver" (Join-Path $out $name) (Join-Path $out "$name.sig") --repo $repo --title "StepMaster $ver" --notes-file (Join-Path $root "scripts\release-notes.md")
+  # Picture for the in-app update window: scripts\banner.png (or .webp/.jpg), up to 4 MB.
+  $files = @((Join-Path $out $name), (Join-Path $out "$name.sig"))
+  $banner = @("banner.webp", "banner.png", "banner.jpg") | ForEach-Object { Join-Path $root "scripts\$_" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($banner) { $files += $banner; Write-Host "Banner: $banner" }
+  gh release create "v$ver" @files --repo $repo --title "StepMaster $ver" --notes-file (Join-Path $root "scripts\release-notes.md")
   if ($LASTEXITCODE -ne 0) { throw "Publishing failed" }
   Write-Host "Published v$ver to $repo"
 }

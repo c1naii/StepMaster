@@ -7,7 +7,9 @@ mod fsops;
 mod games;
 mod icons;
 mod installer;
+mod journal;
 mod network;
+mod ops;
 mod programs;
 mod protection;
 mod services;
@@ -19,6 +21,8 @@ mod system;
 mod tools;
 mod tray;
 mod updater;
+mod wallpaper;
+mod winget;
 pub mod util;
 
 use parking_lot::{Mutex, RwLock};
@@ -110,6 +114,7 @@ pub fn run() {
                 if let Err(e) = tray::create(&handle) {
                     eprintln!("tray: {e}");
                 }
+                wallpaper::start(handle.clone(), autostart_launch);
                 if let Err(e) = settings::apply_hotkey(&handle, &hotkey) {
                     eprintln!("hotkey: {e}");
                 }
@@ -159,10 +164,25 @@ pub fn run() {
             tools::quit_app,
             updater::update_check,
             updater::update_install,
+            updater::update_notes,
             icons::icons_get,
             installer::install_state,
             installer::install_run,
             installer::uninstall_run,
+            winget::winget_state,
+            winget::winget_install,
+            winget::winget_cancel,
+            winget::winget_search,
+            wallpaper::wallpaper_state,
+            wallpaper::wallpaper_set,
+            wallpaper::wallpaper_view,
+            wallpaper::wallpaper_next,
+            wallpaper::wallpaper_options,
+            wallpaper::wallpaper_add,
+            wallpaper::wallpaper_remove,
+            wallpaper::wallpaper_rename,
+            wallpaper::wallpaper_restore,
+            tools::open_site,
             // system
             system::system_snapshot,
             system::system_overview,
@@ -177,6 +197,9 @@ pub fn run() {
             disk::disk_children,
             disk::disk_large_files,
             disk::disk_cancel,
+            ops::op_cancel,
+            journal::journal_get,
+            journal::journal_revert,
             disk::duplicates_scan,
             disk::fs_recycle,
             downloads::downloads_scan,

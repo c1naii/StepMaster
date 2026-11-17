@@ -1,8 +1,8 @@
 import { Cable, Copy, Eye, EyeOff, Gauge, Globe, Layers, RotateCcw, Wifi } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Empty, ErrorState, PageHeader, Ring, SearchInput, SkeletonRows, Spinner, Tabs, notify } from "../../components/ui";
+import { Empty, ErrorState, PageHeader, Ring, SearchInput, SkeletonRows, Spinner, Tabs, notify, StopButton } from "../../components/ui";
 import { useLang, useT } from "../../i18n";
-import { api, on } from "../../lib/api";
+import { api, subscribe } from "../../lib/api";
 import { formatDecimal } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { ask, useStore } from "../../lib/store";
@@ -153,15 +153,19 @@ function Speed() {
   useEffect(() => {
     alive.current = true;
     let off: (() => void) | undefined;
-    void on<SpeedProgress>("speed://progress", (p) => alive.current && setLive(p)).then((u) => (off = u));
+    off = subscribe<SpeedProgress>("speed://progress", (p) => alive.current && setLive(p));
     return () => {
       alive.current = false;
       off?.();
     };
   }, []);
 
+  const [stopping, setStopping] = useState(false);
+  const stopReq = useRef(false);
   const start = async () => {
     setRunning(true);
+    setStopping(false);
+    stopReq.current = false;
     setLive(null);
     setResult(null);
     try {
@@ -169,9 +173,11 @@ function Speed() {
       lastSpeed = r;
       if (alive.current) setResult(r);
     } catch (e) {
-      notify.err(e);
+      if (stopReq.current) notify.info(t.common.stopped);
+      else notify.err(e);
     } finally {
       if (alive.current) {
+        setStopping(false);
         setRunning(false);
         setLive(null);
       }
@@ -202,10 +208,21 @@ function Speed() {
           </div>
         ))}
       </div>
-      <button className="btn btn-primary lg" disabled={running} onClick={() => void start()}>
-        {running ? <Spinner /> : <Gauge size={18} />}
-        {result ? t.network.speedAgain : t.network.speedStart}
-      </button>
+      {running ? (
+        <StopButton
+          stopping={stopping}
+          onClick={() => {
+            stopReq.current = true;
+            setStopping(true);
+            api.opCancel("speed").catch(notify.err);
+          }}
+        />
+      ) : (
+        <button className="btn btn-primary lg" onClick={() => void start()}>
+          <Gauge size={18} />
+          {result ? t.network.speedAgain : t.network.speedStart}
+        </button>
+      )}
       <div className="small faint">{t.network.speedNote}</div>
     </section>
   );

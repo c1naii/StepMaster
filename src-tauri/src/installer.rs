@@ -4,7 +4,7 @@
 use crate::util::{self, env_path, is_protected_path, psq, tr, Res};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use winreg::enums::*;
 use winreg::RegKey;
 
@@ -35,7 +35,7 @@ static MODE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// "setup" (not installed here), "uninstall" (--uninstall from the installed copy), "normal".
 /// Computed once per process: args and the install location don't change while running.
 pub fn mode() -> &'static str {
-    *MODE.get_or_init(compute_mode)
+    MODE.get_or_init(compute_mode)
 }
 
 fn compute_mode() -> &'static str {
@@ -97,7 +97,8 @@ pub fn install_state() -> InstallState {
 /// Final install folder: always ends with "StepMaster" so nothing is ever dumped into a shared folder.
 pub fn final_dir(chosen: &str) -> Res<PathBuf> {
     let p = PathBuf::from(chosen.trim().trim_matches('"'));
-    if !p.is_absolute() || chosen.starts_with(r"\\") {
+    let has_parent = p.components().any(|c| matches!(c, std::path::Component::ParentDir));
+    if !p.is_absolute() || chosen.starts_with(r"\\") || has_parent {
         return Err(tr("Выберите папку на локальном диске", "Choose a folder on a local drive"));
     }
     let dir = if p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case("StepMaster")).unwrap_or(false) { p } else { p.join("StepMaster") };
@@ -163,7 +164,14 @@ pub async fn install_run(app: AppHandle, dir: String, desktop: bool, start_menu:
                 let _ = std::fs::remove_file(&old);
                 std::fs::rename(&dest, &old).map_err(|e| format!("{}: {e}", tr("Закройте установленный StepMaster и повторите", "Close the installed StepMaster and try again")))?;
             }
-            std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", tr("Не удалось скопировать файл", "Couldn't copy the file")))?;
+            if let Err(e) = std::fs::copy(&src, &dest) {
+                // Put the previous copy back so the installed program keeps working.
+                let old = target_dir.join("StepMaster.exe.old");
+                if !dest.exists() && old.exists() {
+                    let _ = std::fs::rename(&old, &dest);
+                }
+                return Err(format!("{}: {e}", tr("Не удалось скопировать файл", "Couldn't copy the file")));
+            }
         }
         let size_kb = std::fs::metadata(&dest).map(|m| m.len() / 1024).unwrap_or(0) as u32;
 
@@ -215,6 +223,15 @@ pub async fn uninstall_run(app: AppHandle, remove_data: bool) -> Res<()> {
     }
     let install_dir = installed_dir().ok_or_else(|| tr("Программа не установлена", "The program isn't installed"))?;
     let data_dir = app_data_dir(&app);
+    // Undo our system changes first: their saved values live in the data folder.
+    let state_dir = app.state::<crate::AppState>().data_dir.clone();
+    let app2 = app.clone();
+    util::blocking(move || {
+        let _ = crate::games::revert_at(&state_dir);
+        crate::wallpaper::restore_if_ours(&app2);
+        Ok(())
+    })
+    .await?;
     util::blocking(move || {
         stop_instances_in(&install_dir);
         // Autostart task, shortcuts, "Apps & features" entry.
@@ -225,6 +242,9 @@ pub async fn uninstall_run(app: AppHandle, remove_data: bool) -> Res<()> {
         }
         let _ = RegKey::predef(HKEY_LOCAL_MACHINE).delete_subkey_with_flags(UNINSTALL_KEY, KEY_WOW64_64KEY);
         let data_dir = data_dir.filter(|d| remove_data && is_our_data_dir(d));
+        if remove_data {
+            crate::journal::remove_store();
+        }
         // Settings, history, diagnostics go right now; only WebView's own files stay busy.
         if let Some(d) = &data_dir {
             for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
@@ -258,7 +278,12 @@ fn cleanup_command(install_dir: &Path, data_dir: Option<&Path>) -> String {
         .map(|ext| q(Path::new(&format!("{}{ext}", exe.to_string_lossy()))))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut cmd = format!("/C ping 127.0.0.1 -n 3 >nul & del /f /q {files} & rmdir {}", q(install_dir));
+    // The exe may stay locked a bit longer (antivirus scan): retry for ~20 s.
+    let main = q(&exe);
+    let mut cmd = format!(
+        "/C ping 127.0.0.1 -n 3 >nul & del /f /q {files} & for /L %i in (1,1,10) do @if exist {main} (del /f /q {main} 2>nul & ping 127.0.0.1 -n 3 >nul) & rmdir {}",
+        q(install_dir)
+    );
     // The data folder is entirely ours (named after the app id), so it may go recursively.
     // WebView2 helper processes can hold its files a few seconds longer: retry for ~20 s.
     if let Some(d) = data_dir.filter(|d| is_our_data_dir(d)) {
@@ -284,7 +309,6 @@ pub fn refresh_registered_version() {
 }
 
 fn app_data_dir(app: &AppHandle) -> Option<PathBuf> {
-    use tauri::Manager;
     app.path().app_local_data_dir().ok()
 }
 
@@ -300,6 +324,7 @@ mod tests {
         assert!(final_dir("relative\\path").is_err());
         assert!(final_dir(r"\\server\share").is_err());
         assert!(final_dir(r"C:\Windows").is_err());
+        assert!(final_dir(r"C:\Foo\..\Windows").is_err());
         assert!(final_dir(r"C:\Windows\System32").is_err());
         assert!(final_dir("").is_err());
     }

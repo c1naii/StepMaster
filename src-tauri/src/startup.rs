@@ -154,8 +154,16 @@ pub fn read_all() -> Vec<StartupItem> {
 }
 
 #[tauri::command]
-pub fn startup_set(id: String, enabled: bool) -> Res<()> {
-    set_enabled(&id, enabled)
+pub fn startup_set(app: tauri::AppHandle, id: String, enabled: bool) -> Res<()> {
+    let before = id.split_once('|').and_then(|(tag, n)| Src::from_tag(tag).map(|s| is_enabled(s, n)));
+    set_enabled(&id, enabled)?;
+    if before == Some(enabled) {
+        return Ok(()); // nothing changed: nothing to put back
+    }
+    let name = id.split_once('|').map(|(_, n)| n).unwrap_or(&id);
+    let kind = if enabled { "startup_on" } else { "startup_off" };
+    crate::journal::add(&app, kind, name, "", Some(crate::journal::Undo::Startup { id: id.clone(), enabled: !enabled }));
+    Ok(())
 }
 
 pub fn set_enabled(id: &str, enabled: bool) -> Res<()> {

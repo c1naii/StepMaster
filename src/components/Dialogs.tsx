@@ -1,11 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import type { UpdateNotes } from "../lib/types";
 import { fmt, useT } from "../i18n";
-import { api, errorText, on } from "../lib/api";
+import { api, errorText, subscribe } from "../lib/api";
 import { useStore } from "../lib/store";
 import { Bar, useCalm } from "./ui";
 
-const modalMotion = (calm: boolean) => ({
+export const modalMotion = (calm: boolean) => ({
   initial: calm ? { opacity: 0 } : { opacity: 0, transform: "scale(0.96)" },
   animate: calm ? { opacity: 1 } : { opacity: 1, transform: "scale(1)" },
   exit: calm ? { opacity: 0 } : { opacity: 0, transform: "scale(0.98)" },
@@ -16,7 +17,7 @@ const modalMotion = (calm: boolean) => ({
  * Keyboard handling for modal dialogs: Tab stays inside, Escape calls onEscape,
  * initial focus goes to `initial`, and focus returns to the opener on close.
  */
-function useModalKeys(open: boolean, boxRef: React.RefObject<HTMLElement | null>, initial: React.RefObject<HTMLElement | null>, onEscape: () => void) {
+export function useModalKeys(open: boolean, boxRef: React.RefObject<HTMLElement | null>, initial: React.RefObject<HTMLElement | null>, onEscape: () => void) {
   const escRef = useRef(onEscape);
   escRef.current = onEscape;
   useEffect(() => {
@@ -117,8 +118,29 @@ export function UpdateModal() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notes, setNotes] = useState<UpdateNotes | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const updateRef = useRef<HTMLButtonElement>(null);
+  // "What's new" comes with the check; read it whenever the window opens.
+  useEffect(() => {
+    if (!open) {
+      setNotes(null);
+      return;
+    }
+    let alive = true;
+    api
+      .updateNotes()
+      .then((n) => alive && setNotes(n))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+  const sections = (notes?.sections ?? []).filter((s) => s.items.length > 0);
+  const hasNotes = sections.length > 0;
+  const [bannerOk, setBannerOk] = useState(true);
+  useEffect(() => setBannerOk(true), [notes?.image]);
+  const banner = bannerOk ? notes?.image : null;
   useModalKeys(open, boxRef, updateRef, () => {
     if (!busy) setOpen(false);
   });
@@ -145,7 +167,7 @@ export function UpdateModal() {
 
   useEffect(() => {
     let off: (() => void) | undefined;
-    void on<{ percent: number }>("update://progress", (p) => setProgress(p.percent)).then((u) => (off = u));
+    off = subscribe<{ percent: number }>("update://progress", (p) => setProgress(p.percent));
     return () => off?.();
   }, []);
 
@@ -166,10 +188,38 @@ export function UpdateModal() {
     <AnimatePresence>
       {open ? (
         <motion.div className="modal-backdrop" key="update" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
-          <motion.div ref={boxRef} className="modal" role="dialog" aria-modal="true" aria-label={t.update.title} {...modalMotion(calm)}>
-            <img src="/logo-mark.png" alt="" width={36} height={36} style={{ marginBottom: 20 }} />
+          <motion.div
+            ref={boxRef}
+            className={`modal update-modal ${banner ? "has-banner" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t.update.title}
+            {...modalMotion(calm)}
+          >
+            {banner ? (
+              <div className="update-banner">
+                <img src={banner} alt="" onError={() => setBannerOk(false)} />
+              </div>
+            ) : (
+              <img src="/logo-mark.png" alt="" width={36} height={36} style={{ marginBottom: 20 }} />
+            )}
+            <div className="update-body">
             <h2 className="modal-title">{t.update.title}</h2>
             <p className="modal-text">{t.update.text}</p>
+            {hasNotes ? (
+              <div className="update-notes" tabIndex={0} role="region" aria-label={t.update.title}>
+                {sections.map((s, i) => (
+                  <div key={i} className="update-section">
+                    {s.title ? <div className="update-section-title">{s.title}</div> : null}
+                    <ul>
+                      {s.items.map((it, j) => (
+                        <li key={j}>{it}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {busy ? (
               <div style={{ marginTop: 22, display: "grid", gap: 10 }}>
                 <div className="small muted">{t.update.downloading}</div>
@@ -188,6 +238,7 @@ export function UpdateModal() {
               <button ref={updateRef} className="btn btn-primary" disabled={busy} onClick={() => void start()}>
                 {t.update.update}
               </button>
+            </div>
             </div>
           </motion.div>
         </motion.div>

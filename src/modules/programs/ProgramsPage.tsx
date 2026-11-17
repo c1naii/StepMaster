@@ -8,6 +8,7 @@ import { formatBytes } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { ask, useStore } from "../../lib/store";
 import type { ProgramInfo, ProgramKind } from "../../lib/types";
+import { InstallView } from "./InstallView";
 
 type Filter = "all" | ProgramKind;
 type Sort = "name" | "size" | "date";
@@ -20,6 +21,7 @@ export function ProgramsPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>("name");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [view, setView] = useState<"mine" | "install">("mine");
   const isAdmin = useStore((s) => s.app?.isAdmin ?? true);
 
   const items = useMemo(() => {
@@ -55,7 +57,7 @@ export function ProgramsPage() {
     if (!ok) return;
     setBusyId(p.id);
     try {
-      const res = await api.programUninstall(p.id);
+      const res = await api.programUninstall(p.id, p.name);
       if (!res.finished) {
         notify.info(t.programs.notFinished);
       } else {
@@ -67,6 +69,7 @@ export function ProgramsPage() {
             details: res.leftovers,
             confirmLabel: t.common.toRecycle,
             cancelLabel: t.common.later,
+            danger: true,
           });
           if (clean) {
             const r = await api.recycle(res.leftovers);
@@ -89,12 +92,38 @@ export function ProgramsPage() {
         title={t.programs.title}
         sub={t.programs.sub}
         right={
-          <button className="btn btn-secondary" disabled={list.loading} onClick={() => void list.reload()}>
-            <RotateCw size={15} />
-            {t.common.refresh}
-          </button>
+          view === "mine" ? (
+            <button className="btn btn-secondary" disabled={list.loading} onClick={() => void list.reload()}>
+              <RotateCw size={15} />
+              {t.common.refresh}
+            </button>
+          ) : null
         }
       />
+
+      <Tabs
+        value={view}
+        onChange={setView}
+        items={[
+          { id: "mine", label: t.programs.viewMine },
+          { id: "install", label: t.programs.viewInstall },
+        ]}
+      />
+
+      {view === "install" ? (
+        <InstallView
+          programs={list.data}
+          onInstalled={() => void list.reload()}
+          onUninstall={(p) => void uninstall(p)}
+          onFind={(name) => {
+            setQ(name);
+            setFilter("all");
+            setView("mine");
+          }}
+          uninstalling={busyId}
+        />
+      ) : (
+      <>
 
       <div className="row wrap" style={{ gap: 12 }}>
         <Tabs
@@ -170,6 +199,8 @@ export function ProgramsPage() {
           </div>
         )}
       </section>
+      </>
+      )}
     </>
   );
 }

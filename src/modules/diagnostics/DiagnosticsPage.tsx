@@ -14,7 +14,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PageHeader, Ring, Spinner, Toggle, notify, stagger, useCalm } from "../../components/ui";
+import { PageHeader, Ring, Spinner, Toggle, notify, stagger, useCalm, StopButton } from "../../components/ui";
 import { fmt, useLang, useT } from "../../i18n";
 import { api, errorText, on } from "../../lib/api";
 import { formatDate } from "../../lib/format";
@@ -58,7 +58,7 @@ function useOpen() {
   };
 }
 
-function IssueCard({ issue, fix, onFix }: { issue: DiagIssue; fix: FixState; onFix: () => void }) {
+function IssueCard({ issue, fix, onFix, locked }: { issue: DiagIssue; fix: FixState; onFix: () => void; locked?: boolean }) {
   const t = useT();
   const lang = useLang();
   const open = useOpen();
@@ -124,7 +124,7 @@ function IssueCard({ issue, fix, onFix }: { issue: DiagIssue; fix: FixState; onF
           {fixLabel ? (
             <button
               className="btn btn-primary sm"
-              disabled={fix.state === "busy" || !isAdmin}
+              disabled={fix.state === "busy" || !isAdmin || locked}
               title={!isAdmin ? t.common.needsAdmin : fixNote}
               onClick={onFix}
             >
@@ -152,6 +152,11 @@ function IssueCard({ issue, fix, onFix }: { issue: DiagIssue; fix: FixState; onF
   );
 }
 
+/** Pages mounted while a run finishes (the user may leave and come back during a run). */
+const doneListeners = new Set<() => void>();
+/** "Stop" was pressed for the current run (kept here: the page may remount meanwhile). */
+let stopRequested = false;
+
 export function DiagnosticsPage() {
   const t = useT();
   const lang = useLang();
@@ -163,6 +168,12 @@ export function DiagnosticsPage() {
   const [withDefender, setWithDefender] = useState(true);
   const [fixes, setFixes] = useState<Record<number, FixState>>({});
   const [fixingAll, setFixingAll] = useState(false);
+  const [stopping, setStopping] = useState(stopRequested);
+  const stop = () => {
+    stopRequested = true;
+    setStopping(true);
+    api.opCancel("diag").catch(notify.err);
+  };
   const [showPassed, setShowPassed] = useState(false);
   const alive = useRef(true);
 
@@ -179,10 +190,20 @@ export function DiagnosticsPage() {
         })
         .catch(() => undefined);
     }
+    const onDone = () => {
+      setReport(lastReport);
+      setBusy(false);
+      setStopping(false);
+    };
+    doneListeners.add(onDone);
     let off: (() => void) | undefined;
-    void on<DiagProgress>("diag://progress", (p) => alive.current && setProgress(p)).then((u) => (off = u));
+    void on<DiagProgress>("diag://progress", (p) => alive.current && setProgress(p)).then((u) => {
+      if (alive.current) off = u;
+      else u();
+    });
     return () => {
       alive.current = false;
+      doneListeners.delete(onDone);
       off?.();
     };
   }, []);
@@ -194,14 +215,15 @@ export function DiagnosticsPage() {
     setProgress(null);
     setFixes({});
     try {
-      const r = await api.diagRun(withDefender);
-      lastReport = r;
-      if (alive.current) setReport(r);
+      lastReport = await api.diagRun(withDefender);
     } catch (e) {
-      notify.err(e);
+      if (stopRequested) notify.info(t.common.stopped);
+      else notify.err(e);
     } finally {
       running = false;
-      if (alive.current) setBusy(false);
+      stopRequested = false;
+      setStopping(false);
+      doneListeners.forEach((f) => f());
     }
   };
 
@@ -278,7 +300,9 @@ export function DiagnosticsPage() {
         title={t.diag.title}
         sub={t.diag.sub}
         right={
-          report && !busy ? (
+          busy ? (
+            <StopButton onClick={stop} stopping={stopping} />
+          ) : report ? (
             <button className="btn btn-secondary" onClick={() => void run()}>
               <RotateCw size={15} />
               {t.diag.again}
@@ -401,7 +425,7 @@ export function DiagnosticsPage() {
             <motion.div style={{ display: "grid", gap: 12 }} variants={stagger.container} initial={calm ? false : "hidden"} animate="show">
               {report.issues.map((iss, i) => (
                 <motion.div key={`${iss.code}-${i}`} variants={stagger.item}>
-                  <IssueCard issue={iss} fix={fixes[i] ?? { state: "idle" }} onFix={() => void fixOne(i, iss)} />
+                  <IssueCard issue={iss} fix={fixes[i] ?? { state: "idle" }} onFix={() => void fixOne(i, iss)} locked={fixingAll} />
                 </motion.div>
               ))}
             </motion.div>

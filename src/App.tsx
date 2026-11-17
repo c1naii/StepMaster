@@ -5,11 +5,11 @@ import { Toaster } from "sonner";
 import { ConfirmDialog, UpdateModal } from "./components/Dialogs";
 import { InstallerScreen } from "./components/Installer";
 import { Palette } from "./components/Palette";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, useSidebarCollapsed } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { notify, useCalm } from "./components/ui";
 import { useT } from "./i18n";
-import { api, on } from "./lib/api";
+import { api, subscribe } from "./lib/api";
 import type { InstallState } from "./lib/types";
 import { useStore, type ModuleId } from "./lib/store";
 import { MODULES } from "./modules/registry";
@@ -31,6 +31,8 @@ function AdminBanner() {
 
 export default function App() {
   const route = useStore((s) => s.route);
+  const sidebar = useSidebarCollapsed();
+  const navNonce = useStore((s) => s.navNonce);
   const motionSetting = useStore((s) => s.settings.motion);
   const setPalette = useStore((s) => s.setPalette);
   const calm = useCalm();
@@ -64,10 +66,12 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     const offs: (() => void)[] = [];
-    void on("palette://open", () => setPalette(true)).then((u) => offs.push(u));
-    void on<string>("app://navigate", (id) => {
-      if (MODULES.some((m) => m.id === id)) useStore.getState().navigate(id as ModuleId);
-    }).then((u) => offs.push(u));
+    offs.push(subscribe("palette://open", () => setPalette(true)));
+    offs.push(
+      subscribe<string>("app://navigate", (id) => {
+        if (MODULES.some((m) => m.id === id)) useStore.getState().navigate(id as ModuleId);
+      }),
+    );
     return () => {
       window.removeEventListener("keydown", onKey);
       offs.forEach((f) => f());
@@ -105,12 +109,12 @@ export default function App() {
 
   return (
     <>
-      <div className="app">
-        <Sidebar />
+      <div className={`app ${sidebar.collapsed ? "sidebar-collapsed" : ""}`}>
+        <Sidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} />
         <main className="main">
           <TitleBar />
           <AdminBanner />
-          <div className="page-scroll" key={route}>
+          <div className="page-scroll" key={`${route}:${navNonce}`}>
             <motion.div
               className="page"
               initial={calm ? { opacity: 0 } : { opacity: 0, transform: "translateY(6px)" }}

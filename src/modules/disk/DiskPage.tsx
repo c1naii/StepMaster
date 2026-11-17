@@ -1,39 +1,21 @@
 import { motion } from "motion/react";
 import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bar, Empty, ErrorState, PageHeader, SkeletonRows, Spinner, Tabs, notify, stagger, useCalm } from "../../components/ui";
+import { Bar, Empty, ErrorState, PageHeader, SkeletonRows, Spinner, Tabs, notify, stagger, useCalm, StopButton } from "../../components/ui";
 import { countOf, fmt, useLang, useT } from "../../i18n";
-import { api, errorText, on, pickPath } from "../../lib/api";
+import { api, errorText, pickPath, subscribe } from "../../lib/api";
 import { baseName, formatBytes, parentPath, pct } from "../../lib/format";
 import { usePoll } from "../../lib/hooks";
-import { ask, useStore } from "../../lib/store";
+import { useStore } from "../../lib/store";
 import type { DiskEntry, DiskFolder, DuplicateGroup, ScanProgress } from "../../lib/types";
 import { Downloads } from "./Downloads";
+import { recycle as recycleShared } from "./recycle";
 
 type Tab = "analyze" | "downloads" | "large" | "dupes";
 
-async function confirmRecycle(paths: string[], t: ReturnType<typeof useT>, lang: "ru" | "en"): Promise<boolean> {
-  return ask({
-    title: t.disk.recycleTitle,
-    text: fmt(t.disk.recycleText, { n: countOf(paths.length, t.common.items, lang) }),
-    details: paths.slice(0, 50),
-    confirmLabel: t.common.toRecycle,
-    cancelLabel: t.common.cancel,
-    danger: true,
-  });
-}
-
+/** Shared confirm-with-paths + Recycle Bin; true if anything was recycled. */
 async function recycle(paths: string[], t: ReturnType<typeof useT>, lang: "ru" | "en"): Promise<boolean> {
-  if (!(await confirmRecycle(paths, t, lang))) return false;
-  try {
-    const r = await api.recycle(paths);
-    if (r.ok > 0) notify.ok(fmt(t.disk.recycled, { n: countOf(r.ok, t.common.items, lang) }));
-    if (r.failed.length > 0) notify.err(fmt(t.disk.recycleFailed, { n: r.failed.length }) + "\n" + r.failed.slice(0, 3).join("\n"));
-    return r.ok > 0;
-  } catch (e) {
-    notify.err(e);
-    return false;
-  }
+  return (await recycleShared(paths, t, lang)).length > 0;
 }
 
 /* ---------------- Analyze ---------------- */
@@ -53,7 +35,7 @@ function Analyze({ onScanned }: { onScanned: () => void }) {
   useEffect(() => {
     alive.current = true;
     let off: (() => void) | undefined;
-    void on<ScanProgress>("disk://progress", (p) => setProgress(p)).then((u) => (off = u));
+    off = subscribe<ScanProgress>("disk://progress", (p) => setProgress(p));
     return () => {
       alive.current = false;
       off?.();
@@ -280,18 +262,27 @@ function Duplicates() {
     };
   }, []);
 
+  const [stopping, setStopping] = useState(false);
+  const stopReq = useRef(false);
   const run = async (p: string) => {
     setPath(p);
     setBusy(true);
+    setStopping(false);
+    stopReq.current = false;
     setError(null);
     setGroups(null);
     try {
       const g = await api.duplicatesScan(p);
       if (alive.current) setGroups(g);
     } catch (e) {
-      if (alive.current) setError(errorText(e));
+      if (!alive.current) return;
+      if (stopReq.current) notify.info(t.common.stopped);
+      else setError(errorText(e));
     } finally {
-      if (alive.current) setBusy(false);
+      if (alive.current) {
+        setBusy(false);
+        setStopping(false);
+      }
     }
   };
 
@@ -305,6 +296,16 @@ function Duplicates() {
           <div style={{ fontWeight: 500 }}>{path ?? t.disk.dupesScan}</div>
           <div className="small muted">{t.disk.dupesHint}</div>
         </div>
+        {busy ? (
+          <StopButton
+            stopping={stopping}
+            onClick={() => {
+              stopReq.current = true;
+              setStopping(true);
+              api.opCancel("dupes").catch(notify.err);
+            }}
+          />
+        ) : null}
         <button
           className="btn btn-primary"
           disabled={busy}
@@ -332,8 +333,14 @@ function Duplicates() {
                 <button
                   className="btn btn-secondary sm"
                   onClick={async () => {
-                    const rest = g.files.slice(1);
-                    if (await recycle(rest, t, lang)) setGroups((gs) => (gs ?? []).filter((x) => x !== g));
+                    const done = new Set(await recycleShared(g.files.slice(1), t, lang));
+                    if (done.size === 0) return;
+                    // Keep files that failed to go to the Recycle Bin: they are still on disk.
+                    setGroups((gs) =>
+                      (gs ?? [])
+                        .map((x) => (x === g ? { ...x, files: x.files.filter((f) => !done.has(f)) } : x))
+                        .filter((x) => x.files.length > 1),
+                    );
                   }}
                 >
                   {t.disk.keepFirst}
