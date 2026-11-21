@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import type { UpdateNotes } from "../lib/types";
+import type { UpdateNotes, WhatsNew } from "../lib/types";
 import { fmt, useT } from "../i18n";
 import { api, errorText, subscribe } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -111,6 +111,100 @@ export function ConfirmDialog() {
 }
 
 /** "Нужно обновить программу" — shown once per launch when GitHub has a newer build. */
+let whatsNewOpen = false;
+
+/** What changed in UpdateModal notes, as a list (shared with "What's new"). */
+function NotesList({ sections, label }: { sections: UpdateNotes["sections"]; label: string }) {
+  return (
+    <div className="update-notes" tabIndex={0} role="region" aria-label={label}>
+      {sections.map((s, i) => (
+        <div key={i} className="update-section">
+          {s.title ? <div className="update-section-title">{s.title}</div> : null}
+          <ul>
+            {s.items.map((it, j) => (
+              <li key={j}>{it}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Shown once after StepMaster was updated: picture + "New / Fixed" of the version now running. */
+export function WhatsNewModal() {
+  const t = useT();
+  const calm = useCalm();
+  const [data, setData] = useState<WhatsNew | null>(null);
+  const [bannerOk, setBannerOk] = useState(true);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const okRef = useRef<HTMLButtonElement>(null);
+  const open = data !== null;
+  const close = () => {
+    setData(null);
+    whatsNewOpen = false;
+    api.whatsNewSeen().catch(() => undefined);
+    window.dispatchEvent(new Event("sm:whats-new-closed"));
+  };
+  useModalKeys(open, boxRef, okRef, close);
+
+  useEffect(() => {
+    let alive = true;
+    const timer = setTimeout(() => {
+      api
+        .whatsNew()
+        .then((w) => {
+          if (!alive || !w) return;
+          whatsNewOpen = true;
+          setData(w);
+        })
+        .catch(() => undefined);
+    }, 800);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const sections = (data?.notes.sections ?? []).filter((s) => s.items.length > 0);
+  const banner = bannerOk ? data?.notes.image : null;
+
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="modal-backdrop" key="whats-new" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+          <motion.div
+            ref={boxRef}
+            className={`modal update-modal ${banner ? "has-banner" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t.whatsNew.title}
+            {...modalMotion(calm)}
+          >
+            {banner ? (
+              <div className="update-banner">
+                <img src={banner} alt="" onError={() => setBannerOk(false)} />
+              </div>
+            ) : (
+              <img src="/logo-mark.png" alt="" width={36} height={36} style={{ marginBottom: 20 }} />
+            )}
+            <div className="update-body">
+              <h2 className="modal-title">{t.whatsNew.title}</h2>
+              <p className="modal-text">{fmt(t.whatsNew.text, { v: data.version })}</p>
+              <NotesList sections={sections} label={t.whatsNew.title} />
+              <div className="modal-actions">
+                <button ref={okRef} className="btn btn-primary" onClick={close}>
+                  {t.whatsNew.ok}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 export function UpdateModal() {
   const t = useT();
   const calm = useCalm();
@@ -152,7 +246,10 @@ export function UpdateModal() {
       api
         .updateCheck()
         .then((r) => {
-          if (alive && r.available) setOpen(true);
+          if (!alive || !r.available) return;
+          // "What's new" is on screen: offer the next update after it's closed.
+          if (whatsNewOpen) window.addEventListener("sm:whats-new-closed", () => alive && setOpen(true), { once: true });
+          else setOpen(true);
         })
         .catch(() => undefined);
     }, 2500);
@@ -207,18 +304,7 @@ export function UpdateModal() {
             <h2 className="modal-title">{t.update.title}</h2>
             <p className="modal-text">{t.update.text}</p>
             {hasNotes ? (
-              <div className="update-notes" tabIndex={0} role="region" aria-label={t.update.title}>
-                {sections.map((s, i) => (
-                  <div key={i} className="update-section">
-                    {s.title ? <div className="update-section-title">{s.title}</div> : null}
-                    <ul>
-                      {s.items.map((it, j) => (
-                        <li key={j}>{it}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
+              <NotesList sections={sections} label={t.update.title} />
             ) : null}
             {busy ? (
               <div style={{ marginTop: 22, display: "grid", gap: 10 }}>

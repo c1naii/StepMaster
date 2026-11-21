@@ -219,6 +219,69 @@ pub async fn find_update(local: &str) -> Res<Option<UpdateInfo>> {
     Ok(Some(UpdateInfo { exe_url, sig_url, notes }))
 }
 
+// ---------- "What's new" after an update ----------
+
+fn seen_path(data: &Path) -> PathBuf {
+    data.join("seen-version.txt")
+}
+
+#[derive(Serialize)]
+pub struct WhatsNew {
+    version: String,
+    notes: Notes,
+}
+
+/// Shown once after the program was updated (also from old versions whose update window had
+/// no notes). A fresh install shows nothing: no settings file yet means it never ran before.
+#[tauri::command]
+pub async fn whats_new(app: AppHandle) -> Res<Option<WhatsNew>> {
+    let data = app.state::<AppState>().data_dir.clone();
+    let cur = env!("CARGO_PKG_VERSION");
+    let seen = std::fs::read_to_string(seen_path(&data)).ok().map(|s| s.trim().to_string());
+    let ran_before = data.join("settings.json").is_file();
+    match seen.as_deref() {
+        Some(v) if !is_newer(cur, v) => return Ok(None),
+        None if !ran_before => {
+            let _ = std::fs::write(seen_path(&data), cur);
+            return Ok(None);
+        }
+        _ => {}
+    }
+    if REPO.is_empty() {
+        return Ok(None);
+    }
+    // Offline: try again next start (nothing is marked as seen).
+    let url = format!("https://api.github.com/repos/{REPO}/releases/tags/v{cur}");
+    let resp = client()?
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let _ = std::fs::write(seen_path(&data), cur);
+        return Ok(None);
+    }
+    let rel: Release = resp.json().await.map_err(|e| e.to_string())?;
+    let mut notes = Notes { sections: parse_notes(rel.body.as_deref().unwrap_or("")), image: None };
+    if notes.sections.iter().all(|s| s.items.is_empty()) {
+        let _ = std::fs::write(seen_path(&data), cur);
+        return Ok(None);
+    }
+    let find = |n: &str| rel.assets.iter().find(|a| a.name.eq_ignore_ascii_case(n)).map(|a| a.browser_download_url.clone());
+    if let Some((name, url)) = BANNER_ASSETS.iter().find_map(|n| find(n).map(|u| (*n, u))) {
+        notes.image = banner(&url, name).await;
+    }
+    Ok(Some(WhatsNew { version: cur.to_string(), notes }))
+}
+
+/// The "What's new" window was closed: don't show it again for this version.
+#[tauri::command]
+pub fn whats_new_seen(state: tauri::State<'_, AppState>) {
+    let _ = std::fs::write(seen_path(&state.data_dir), env!("CARGO_PKG_VERSION"));
+}
+
 /// "What's new" of the update found by the last check (empty if none).
 #[tauri::command]
 pub fn update_notes(state: tauri::State<'_, AppState>) -> Notes {

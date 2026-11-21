@@ -1,6 +1,6 @@
 import { AlertCircle, CheckCircle2, Download, FolderOpen, Keyboard, RefreshCw } from "lucide-react";
 import { HotkeysDialog } from "./HotkeysDialog";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { PageHeader, Spinner, Tabs, Toggle, notify } from "../../components/ui";
 import { fmt, useT } from "../../i18n";
 import { api, errorText } from "../../lib/api";
@@ -19,19 +19,22 @@ export function SettingsPage() {
   const [checking, setChecking] = useState(false);
   const [upd, setUpd] = useState<{ kind: "none" | "available" | "error"; msg?: string } | null>(null);
 
+  // Quick clicks (RU→EN→RU) send several saves: only the latest answer is applied.
+  const seq = useRef(0);
   const save = async (patch: Partial<Settings>) => {
+    const my = ++seq.current;
     const prev = settings;
     const next = { ...settings, ...patch };
     setSettings(next); // optimistic
     setSaving(true);
     try {
       const saved = await api.settingsSet(next);
-      setSettings(saved);
+      if (my === seq.current) setSettings(saved);
     } catch (e) {
-      setSettings(prev);
+      if (my === seq.current) setSettings(prev);
       notify.err(e);
     } finally {
-      setSaving(false);
+      if (my === seq.current) setSaving(false);
     }
   };
 

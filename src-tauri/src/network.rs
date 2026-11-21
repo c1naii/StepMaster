@@ -90,7 +90,7 @@ pub async fn dns_set(app: AppHandle, preset: String) -> Res<()> {
     let preset_name = preset.clone();
     util::blocking(move || {
         // Each adapter's previous static DNS ("" = automatic): the journal can put exactly that back.
-        let prev: Vec<(u32, String)> = util::ps_json(&script)?;
+        let prev: Vec<(u32, String)> = util::ps_json_timeout(&script, 90)?;
         crate::journal::add(&app, "dns", "", &preset_name, Some(crate::journal::Undo::Dns { adapters: prev }));
         Ok(())
     })

@@ -27,6 +27,10 @@ pub enum Undo {
     /// Previous registry value of the GPU preference for this exe (None = there was none).
     GpuPref { exe: String, value: Option<String> },
     GameMode,
+    /// Power plan GUID that was active before.
+    Power { guid: String },
+    /// Previous ProxyEnable value (HKCU Internet Settings).
+    Proxy { enable: u32 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -147,6 +151,9 @@ pub fn journal_get(state: tauri::State<'_, AppState>) -> Vec<Entry> {
 pub async fn journal_revert(app: AppHandle, id: u64) -> Res<Vec<Entry>> {
     let dir = app.state::<AppState>().data_dir.clone();
     util::blocking(move || {
+        // One "Put back" at a time: a double click must not undo the same thing twice.
+        static REVERT: Mutex<()> = Mutex::new(());
+        let _r = REVERT.lock();
         let entry = load(&dir).into_iter().find(|e| e.id == id).ok_or_else(|| tr("Запись не найдена", "Entry not found"))?;
         if entry.reverted {
             return Ok(load(&dir));
@@ -233,6 +240,14 @@ fn apply(dir: &Path, undo: &Undo) -> Res<()> {
             util::ps_timeout(&script, 60).map(|_| ())
         }
         Undo::GpuPref { exe, value } => crate::games::gpu_pref_restore(exe, value.as_deref()),
+        Undo::Power { guid } => {
+            if guid.len() != 36 || !guid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+                return Err(tr("Неверная запись", "Invalid entry"));
+            }
+            let (ok, _, err) = util::run_hidden("powercfg.exe", &["/setactive", guid])?;
+            if ok { Ok(()) } else { Err(err) }
+        }
+        Undo::Proxy { enable } => crate::diagnostics::set_proxy_enable(*enable),
         Undo::GameMode => {
             if !crate::games::is_active(dir) {
                 return Err(tr("Игровой режим уже выключен", "Game mode is already off"));

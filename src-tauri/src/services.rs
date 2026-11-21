@@ -12,6 +12,8 @@ const CRITICAL: &[&str] = &[
     "themes", "userManager", "usermanager", "wlansvc", "wscsvc", "trustedinstaller", "msiserver", "vds",
     "vaultsvc", "keyiso", "appinfo", "staterepository", "tokenbroker", "termservice", "sgrmbroker",
     "eventsystem", "storsvc", "timebrokersvc", "shellhwdetection", "cdpusersvc", "wpnusersvc", "onesyncsvc",
+    // Display policy (screen setup) and the connection manager (Wi-Fi / Ethernet choice).
+    "dispbrokerdesktopsvc", "wcmsvc",
 ];
 
 pub(crate) fn is_critical(name: &str) -> bool {
@@ -91,7 +93,7 @@ pub async fn service_action(app: tauri::AppHandle, name: String, action: String)
         let was_running = util::ps_timeout(&format!("[string](Get-Service -Name {}).Status", psq(&name)), 30)
             .map(|s| s.trim().eq_ignore_ascii_case("running"))
             .ok();
-        util::ps(&cmd)?;
+        util::ps_timeout(&cmd, 120)?;
         // Undo puts the service back the way it was (restart changes nothing to undo).
         let undo = match (action.as_str(), was_running) {
             ("stop", Some(true)) => Some(Undo::ServiceRun { name: name.clone(), run: true }),
@@ -105,7 +107,7 @@ pub async fn service_action(app: tauri::AppHandle, name: String, action: String)
 }
 
 /// Current start type of a service as `sc config` takes it (auto / delayed-auto / demand / disabled).
-fn start_type(name: &str) -> Option<String> {
+pub(crate) fn start_type(name: &str) -> Option<String> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
     let k = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(format!(r"SYSTEM\CurrentControlSet\Services\{name}")).ok()?;
     let start: u32 = k.get_value("Start").ok()?;
@@ -134,7 +136,7 @@ pub async fn service_start_mode(app: tauri::AppHandle, name: String, mode: Strin
     let cmd = format!("Set-Service -Name {} -StartupType {m}", psq(&name));
     util::blocking(move || {
         let before = start_type(&name);
-        util::ps(&cmd)?;
+        util::ps_timeout(&cmd, 120)?;
         let undo = before.map(|mode| Undo::ServiceMode { name: name.clone(), mode });
         journal::add(&app, "service_mode", &name, &mode, undo);
         Ok(())

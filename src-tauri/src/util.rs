@@ -61,6 +61,46 @@ pub fn sys_tool(name: &str) -> PathBuf {
 }
 
 /// Run a Windows system tool without a console window. Returns (success, stdout, stderr).
+/// Like `run_hidden`, but ends the process tree after `secs` or when `op`'s "Stop" is pressed.
+pub fn run_hidden_limit(program: &str, args: &[&str], secs: u64, op: crate::ops::Op) -> Res<(bool, String, String)> {
+    use std::process::Stdio;
+    let child = Command::new(sys_tool(program))
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program}: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let kill = || {
+        let _ = Command::new(sys_tool("taskkill.exe")).args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(CREATE_NO_WINDOW).output();
+    };
+    let start = std::time::Instant::now();
+    loop {
+        if crate::ops::cancelled(op) {
+            kill();
+            return Err(crate::ops::stopped());
+        }
+        if start.elapsed() > std::time::Duration::from_secs(secs) {
+            kill();
+            return Err(tr("Операция заняла слишком много времени", "The operation took too long"));
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(r) => {
+                let out = r.map_err(|e| format!("{program}: {e}"))?;
+                return Ok((out.status.success(), decode_console(&out.stdout), decode_console(&out.stderr)));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Err(format!("{program}: error")),
+        }
+    }
+}
+
 pub fn run_hidden(program: &str, args: &[&str]) -> Res<(bool, String, String)> {
     let out = Command::new(sys_tool(program))
         .args(args)
@@ -123,8 +163,9 @@ pub fn psq(s: &str) -> String {
 
 /// Run a PowerShell script (Windows PowerShell 5.1, always present on Win10/11).
 /// Errors thrown in the script come back as Err(message). Output is UTF-8.
+/// Never waits forever: a hung WMI / service call is ended after 10 minutes.
 pub fn ps(script: &str) -> Res<String> {
-    ps_inner(script, None, None)
+    ps_inner(script, Some(std::time::Duration::from_secs(600)), None)
 }
 
 /// Like `ps_timeout`, but also stops PowerShell as soon as the operation's "Stop" flag is raised.

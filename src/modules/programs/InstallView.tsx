@@ -129,6 +129,22 @@ export function InstallView({
   const calm = useCalm();
   const isAdmin = useStore((s) => s.app?.isAdmin ?? true);
   const wg = useAsync(api.wingetState);
+  // No winget: StepMaster installs it itself (once per view; "Retry" runs it again).
+  const [setup, setSetup] = useState<{ busy: boolean; error: string | null; tried: boolean }>({ busy: false, error: null, tried: false });
+  const runSetup = () => {
+    setSetup({ busy: true, error: null, tried: true });
+    api
+      .wingetSetup()
+      .then((s) => {
+        wg.setData(s);
+        setSetup({ busy: false, error: null, tried: true });
+      })
+      .catch((e) => setSetup({ busy: false, error: String(e?.message ?? e), tried: true }));
+  };
+  useEffect(() => {
+    if (wg.data && !wg.data.available && !setup.tried) runSetup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wg.data]);
   const [q, setQ] = useState("");
   const [picked, setPicked] = useSession("picked");
   const [progress, setProgress] = useSession("progress");
@@ -229,7 +245,7 @@ export function InstallView({
 
   const searchAll = async () => {
     const query = q.trim();
-    if (query.length < 2) return;
+    if (query.length < 2 || searching) return;
     setSearching(true);
     try {
       setHits({ q: query, list: await api.wingetSearch(query) });
@@ -282,11 +298,24 @@ export function InstallView({
     );
 
   if (wg.data && !wg.data.available) {
+    if (setup.busy)
+      return (
+        <div className="notice">
+          <Spinner />
+          <span style={{ flex: 1 }}>{t.programs.iSettingUp}</span>
+        </div>
+      );
     return (
       <div className="notice warn">
         <AlertTriangle size={16} />
-        <span style={{ flex: 1 }}>{t.programs.iNoWinget}</span>
-        <button className="btn btn-secondary sm" onClick={() => api.openTool("appinstaller").catch(notify.err)}>
+        <span style={{ flex: 1 }}>
+          {t.programs.iSetupFailed}
+          {setup.error ? ` ${setup.error}` : ""}
+        </span>
+        <button className="btn btn-secondary sm" onClick={runSetup}>
+          {t.programs.iRetry}
+        </button>
+        <button className="btn btn-ghost sm" onClick={() => api.openTool("appinstaller").catch(notify.err)}>
           {t.programs.iGetWinget}
         </button>
       </div>

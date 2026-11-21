@@ -196,7 +196,7 @@ if ($b) {
   battery = $bat
 } | ConvertTo-Json -Depth 4 -Compress
 "#;
-        let ps: PsOverview = util::ps_json(script)?;
+        let ps: PsOverview = util::ps_json_timeout(script, 90)?;
         let (os_name, os_build, display) = os_info();
         Ok(Overview {
             cpu_name: ps.cpu_name,

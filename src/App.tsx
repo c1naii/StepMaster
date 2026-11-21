@@ -2,7 +2,7 @@ import { motion } from "motion/react";
 import { ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Toaster } from "sonner";
-import { ConfirmDialog, UpdateModal } from "./components/Dialogs";
+import { ConfirmDialog, UpdateModal, WhatsNewModal } from "./components/Dialogs";
 import { InstallerScreen } from "./components/Installer";
 import { Palette } from "./components/Palette";
 import { Sidebar, useSidebarCollapsed } from "./components/Sidebar";
@@ -130,6 +130,7 @@ export default function App() {
       <Palette />
       <ConfirmDialog />
       <UpdateModal />
+      <WhatsNewModal />
       <Toaster theme="dark" position="bottom-right" offset={20} toastOptions={{ className: "sm-toast", duration: 3500 }} />
     </>
   );

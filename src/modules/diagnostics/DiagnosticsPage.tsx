@@ -138,6 +138,11 @@ function IssueCard({ issue, fix, onFix, locked }: { issue: DiagIssue; fix: FixSt
               <ExternalLink size={13} />
             </button>
           ) : null}
+          {fix.state === "busy" && issue.fix === "repair_system" ? (
+            <button className="btn btn-secondary sm" onClick={() => api.opCancel("repair").catch(notify.err)}>
+              {t.common.stop}
+            </button>
+          ) : null}
           {fix.state === "busy" && fixNote ? <span className="small faint">{fixNote}</span> : null}
           {fix.state === "error" ? <span className="small" style={{ color: "var(--danger)" }}>{fmt(t.diag.fixFailed, { e: fix.msg ?? "" })}</span> : null}
         </div>
@@ -254,7 +259,7 @@ export function DiagnosticsPage() {
   };
 
   const autoFixable = useMemo(
-    () => (report?.issues ?? []).map((iss, i) => ({ iss, i })).filter(({ iss, i }) => iss.fix && FIX_ALL.has(iss.fix) && fixes[i]?.state !== "done"),
+    () => (report?.issues ?? []).map((iss, i) => ({ iss, i })).filter(({ iss, i }) => iss.fix && FIX_ALL.has(iss.fix) && fixes[i]?.state !== "done" && fixes[i]?.state !== "busy"),
     [report, fixes],
   );
 
@@ -403,7 +408,7 @@ export function DiagnosticsPage() {
               </div>
               <div className="row wrap" style={{ marginTop: 10 }}>
                 {autoFixable.length > 0 ? (
-                  <button className="btn btn-primary" disabled={fixingAll || !isAdmin} title={!isAdmin ? t.common.needsAdmin : undefined} onClick={() => void fixAll()}>
+                  <button className="btn btn-primary" disabled={fixingAll || !isAdmin || Object.values(fixes).some((f) => f?.state === "busy")} title={!isAdmin ? t.common.needsAdmin : undefined} onClick={() => void fixAll()}>
                     {fixingAll ? <Spinner /> : <Wand2 size={16} />}
                     {fixingAll ? t.diag.fixing : fmt(t.diag.fixAll, { n: autoFixable.length })}
                   </button>

@@ -20,14 +20,14 @@ function flush() {
       .then((res) => {
         for (const spec of part) {
           const v = res[spec] ?? null;
-          cache.set(spec, v);
+          // "Not found" isn't kept: the program may still be installing.
+          if (v) cache.set(spec, v);
           waiters.get(spec)?.forEach((f) => f(v));
           waiters.delete(spec);
         }
       })
       .catch(() => {
         for (const spec of part) {
-          cache.set(spec, null);
           waiters.get(spec)?.forEach((f) => f(null));
           waiters.delete(spec);
         }

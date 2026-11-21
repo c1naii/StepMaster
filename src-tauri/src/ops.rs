@@ -11,9 +11,11 @@ pub enum Op {
     Speed,
     Dupes,
     Defender,
+    Repair,
 }
 
-static FLAGS: [AtomicBool; 5] = [
+static FLAGS: [AtomicBool; 6] = [
+    AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
@@ -34,7 +36,8 @@ pub fn begin(op: Op) {
     flag(op).store(false, Ordering::SeqCst);
 }
 
-static RUNNING: [AtomicBool; 5] = [
+static RUNNING: [AtomicBool; 6] = [
+    AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
@@ -76,6 +79,7 @@ fn parse(op: &str) -> Option<Op> {
         "speed" => Op::Speed,
         "dupes" => Op::Dupes,
         "defender" => Op::Defender,
+        "repair" => Op::Repair,
         _ => return None,
     })
 }

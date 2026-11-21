@@ -48,7 +48,7 @@ export function Startup() {
                   <div className="cell-sub" title={s.command}>{s.command}</div>
                 </div>
                 <span className="badge">{s.location}</span>
-                <Toggle checked={s.enabled} disabled={pending === s.id} label={s.name} onChange={(v) => void set(s.id, s.name, v)} />
+                <Toggle checked={s.enabled} disabled={pending !== null} label={s.name} onChange={(v) => void set(s.id, s.name, v)} />
               </div>
             ))}
           </div>

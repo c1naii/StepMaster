@@ -228,7 +228,7 @@ export interface ProgramInfo {
 }
 
 /** Long operations with a "Stop" button. */
-export type StoppableOp = "diag" | "cleanup" | "speed" | "dupes" | "defender";
+export type StoppableOp = "diag" | "cleanup" | "speed" | "dupes" | "defender" | "repair";
 
 /** How a journal entry is put back (only the type matters to the UI). */
 export type JournalUndo = { type: "serviceMode" | "serviceRun" | "startup" | "dns" | "firewall" | "gpuPref" | "gameMode" };
@@ -345,6 +345,12 @@ export interface UpdateNotes {
   sections: { title: string; items: string[] }[];
   /** Banner picture as a data: URL. */
   image: string | null;
+}
+
+/** Shown once after an update: notes of the version now running. */
+export interface WhatsNew {
+  version: string;
+  notes: UpdateNotes;
 }
 
 /* ---------- Downloads review ---------- */

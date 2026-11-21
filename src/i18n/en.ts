@@ -545,7 +545,9 @@ export const en: Dict = {
     iFailed: "Failed",
     iHint: "Programs are downloaded from their official sites and installed one by one. Internet is required.",
     iRunHint: "You can keep using the PC. Some programs open by themselves when installed.",
-    iNoWinget: "Windows is missing winget, the package manager used for installs. Get “App Installer” from the Microsoft Store — it's free and takes a minute.",
+    iSettingUp: "Installing winget, the package manager used for installs. This is needed once and takes 1–3 minutes.",
+    iSetupFailed: "Couldn't install winget automatically. Check the internet and press “Retry”, or get “App Installer” from the Microsoft Store.",
+    iRetry: "Retry",
     iGetWinget: "Open Microsoft Store",
     iFinished: "Install finished: {ok} of {n} done",
     iFinishedFail: "Couldn't install: {names}",
@@ -910,6 +912,11 @@ export const en: Dict = {
     later: "Later",
     downloading: "Downloading update…",
     failed: "Update failed: {e}",
+  },
+  whatsNew: {
+    title: "StepMaster is updated",
+    text: "You now have version {v}. Here's what changed:",
+    ok: "Got it",
   },
   install: {
     title: "Install StepMaster",

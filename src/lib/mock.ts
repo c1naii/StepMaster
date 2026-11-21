@@ -75,29 +75,6 @@ async function opSleep(op: string, ms: number) {
   if (stopFlags[op]) throw STOPPED;
 }
 
-/** Example update creative (in a real release it is the banner.png attached to it). */
-function mockBanner(): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440">
-<defs>
-<radialGradient id="g1" cx="78%" cy="30%" r="60%"><stop offset="0" stop-color="#3a3a3a"/><stop offset="1" stop-color="#0b0b0b"/></radialGradient>
-<linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#fff" stop-opacity=".04"/></linearGradient>
-</defs>
-<rect width="960" height="440" fill="url(#g1)"/>
-<g opacity=".9" transform="translate(110 40)">
-<circle cx="720" cy="190" r="150" fill="url(#glass)" stroke="#fff" stroke-opacity=".25"/>
-<circle cx="820" cy="300" r="80" fill="url(#glass)" stroke="#fff" stroke-opacity=".2"/>
-<rect x="600" y="250" width="190" height="64" rx="32" fill="url(#glass)" stroke="#fff" stroke-opacity=".3"/>
-<rect x="628" y="272" width="20" height="20" rx="4" fill="#fff"/>
-<text x="664" y="290" font-family="Segoe UI, sans-serif" font-size="22" fill="#fff">Остановить</text>
-</g>
-<text x="64" y="96" font-family="Segoe UI, sans-serif" font-size="22" fill="#9a9a9a" letter-spacing="4">STEPMASTER</text>
-<text x="64" y="196" font-family="Segoe UI, sans-serif" font-size="64" font-weight="600" fill="#fff">Журнал</text>
-<text x="64" y="266" font-family="Segoe UI, sans-serif" font-size="64" font-weight="600" fill="#fff">и кнопка «Стоп»</text>
-<text x="64" y="330" font-family="Segoe UI, sans-serif" font-size="24" fill="#a8a8a8">Всё, что меняет программа, можно вернуть</text>
-</svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
 /* Journal: a few example entries, reverting marks them. */
 const now = () => Math.floor(Date.now() / 1000);
 let journal: { id: number; at: number; kind: string; target: string; detail: string; undo: { type: string } | null; reverted: boolean }[] = [
@@ -200,13 +177,22 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   reveal_path: () => undefined,
   // Update window preview: localStorage.setItem("sm-update", "1") (or the "worst" mode).
   update_check: () => ({ available: mode() === "worst" || localStorage.getItem("sm-update") === "1" }),
-  update_notes: () => ({
-    image: mockBanner(),
-    sections: [
-      { title: "Новое", items: ["Журнал: всё, что менял StepMaster, и кнопка «Вернуть»", "Кнопка «Остановить» у диагностики, очистки, теста скорости и поиска дубликатов", "Окно обновления с картинкой и списком изменений"] },
-      { title: "Исправлено", items: ["Обои пользователя больше не теряются после перезапуска", "Меньше ложных тревог в диагностике", "Корзина не очищается без вопроса"] },
-    ],
-  }),
+  // The real release files, so this window always shows what the next release will show.
+  update_notes: async () => {
+    const [{ default: md }, { default: png }] = await Promise.all([
+      import("../../scripts/release-notes.md?raw"),
+      import("../../scripts/banner.png"),
+    ]);
+    const sections: { title: string; items: string[] }[] = [];
+    for (const line of md.split(/\r?\n---\r?\n/)[0].split(/\r?\n/)) {
+      if (line.startsWith("## ")) sections.push({ title: line.slice(3).trim(), items: [] });
+      else if (line.startsWith("- ") && sections.length) sections[sections.length - 1].items.push(line.slice(2).trim());
+    }
+    return { image: localStorage.getItem("sm-update-banner") ?? png, sections };
+  },
+  whats_new: async () =>
+    localStorage.getItem("sm-whatsnew") === "1" ? { version: "1.0.7", notes: await (handlers.update_notes as () => Promise<unknown>)() } : null,
+  whats_new_seen: () => localStorage.removeItem("sm-whatsnew"),
   update_install: async () => {
     for (let i = 0; i <= 100; i += 10) {
       emit("update://progress", { percent: i });
@@ -275,6 +261,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     version: "v1.29.380",
     installed: ["Valve.Steam", "VideoLAN.VLC", "7zip.7zip", "Microsoft.VCRedist.2015+.x64"],
   }),
+  winget_setup: async (): Promise<WingetState> => {
+    await new Promise((r) => setTimeout(r, 8000));
+    return { available: true, version: "v1.29.380", installed: [] };
+  },
   winget_search: (a): WingetHit[] =>
     String(a.query).length < 2
       ? []

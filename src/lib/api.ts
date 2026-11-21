@@ -36,7 +36,7 @@ import type {
   WingetHit,
   WifiProfile,
 } from "./types";
-import type { JournalEntry, StoppableOp, UpdateNotes, WallAddResult, WallOptions, WallState } from "./types";
+import type { JournalEntry, StoppableOp, UpdateNotes, WallAddResult, WallOptions, WallState, WhatsNew } from "./types";
 import { mock } from "./mock";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -93,12 +93,15 @@ export const api = {
   reveal: (path: string) => call<void>("reveal_path", { path }),
   updateCheck: () => call<UpdateCheck>("update_check"),
   updateNotes: () => call<UpdateNotes>("update_notes"),
+  whatsNew: () => call<WhatsNew | null>("whats_new"),
+  whatsNewSeen: () => call<void>("whats_new_seen"),
   updateInstall: () => call<void>("update_install"),
   icons: (specs: string[]) => call<Record<string, string | null>>("icons_get", { specs }),
   showWindow: () => call<void>("show_main_window"),
   quit: () => call<void>("quit_app"),
   installState: () => call<InstallState>("install_state"),
   wingetState: () => call<WingetState>("winget_state"),
+  wingetSetup: () => call<WingetState>("winget_setup"),
   wingetInstall: (ids: string[]) => call<void>("winget_install", { ids }),
   wingetCancel: () => call<void>("winget_cancel"),
   wingetSearch: (query: string) => call<WingetHit[]>("winget_search", { query }),

@@ -831,13 +831,16 @@ fn collect_local(state: &AppState, defender_scanned: bool) -> LocalRaw {
     // System drive space.
     let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
     l.sys_drive = sys_drive.trim_end_matches(':').to_string();
+    let mut found = false;
     for d in crate::system::list_disks_raw() {
         if d.0.trim_end_matches('\\').eq_ignore_ascii_case(sys_drive.trim_end_matches('\\')) && d.1 > 0 {
+            found = true;
             l.sys_free_bytes = d.2;
             l.sys_free_pct = (d.2 as f64 / d.1 as f64 * 100.0).round() as u32;
         }
     }
-    if l.sys_free_bytes == 0 {
+    // Drive not found (not "0 bytes free": a full drive is the worst case to report).
+    if !found {
         l.sys_free_pct = 100;
         l.sys_free_bytes = u64::MAX / 2;
     }
@@ -1004,6 +1007,24 @@ fn restore_hosts(data_dir: &Path) -> Res<String> {
     Ok(backup.to_string_lossy().to_string())
 }
 
+const INET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+/// Turns the user's proxy on/off (also the Journal's "Put back").
+pub fn set_proxy_enable(v: u32) -> Res<()> {
+    use winreg::enums::*;
+    let (k, _) = winreg::RegKey::predef(HKEY_CURRENT_USER).create_subkey(INET_SETTINGS).map_err(|e| e.to_string())?;
+    k.set_value("ProxyEnable", &v).map_err(|e| e.to_string())?;
+    refresh_internet_settings();
+    Ok(())
+}
+
+/// GUID from `powercfg /getactivescheme` ("…GUID: 381b4222-f694-… (Balanced)"), any language.
+fn active_scheme_guid(out: &str) -> Option<String> {
+    out.split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+        .find(|w| w.len() == 36 && w.matches('-').count() == 4)
+        .map(str::to_string)
+}
+
 /// Tells running apps that proxy settings changed (otherwise browsers keep the old proxy).
 fn refresh_internet_settings() {
     use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
@@ -1030,12 +1051,17 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
     let journal_dir = data_dir.clone();
     let fix_id = fix.clone();
     util::blocking(move || {
+        use crate::journal::Undo;
+        // What "Put back" in the Journal restores (set by the fixes that change a setting).
+        let mut undo: Option<Undo> = None;
         let note = match fix.as_str() {
             "cleanup_safe" => {
                 let freed = crate::cleanup::clean_safe(&data_dir, util::is_admin());
                 freed.to_string()
             }
             "power_balanced" => {
+                let (_, cur, _) = util::run_hidden("powercfg.exe", &["/getactivescheme"])?;
+                undo = active_scheme_guid(&cur).map(|guid| Undo::Power { guid });
                 let (ok, _, err) = util::run_hidden("powercfg.exe", &["/setactive", "381b4222-f694-41f0-9685-ff5bb260df2e"])?;
                 if !ok {
                     return Err(err);
@@ -1065,7 +1091,7 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                         "Some threats are potentially unwanted apps — remove threats manually in Windows Security",
                     ));
                 }
-                util::ps("Remove-MpThreat")?;
+                util::ps_timeout("Remove-MpThreat", 300)?;
                 String::new()
             }
             "quick_scan" => {
@@ -1074,33 +1100,46 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
             }
             "enable_firewall" => {
                 require_admin()?;
-                util::ps("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True")?;
+                let before: Vec<(String, bool)> = util::ps_json_timeout(
+                    "ConvertTo-Json -Compress -InputObject @(Get-NetFirewallProfile | ForEach-Object { ,@([string]$_.Name, ([string]$_.Enabled -eq 'True')) })",
+                    30,
+                )
+                .unwrap_or_default();
+                util::ps_timeout("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True", 90)?;
+                undo = (!before.is_empty()).then_some(Undo::Firewall { profiles: before });
                 String::new()
             }
             "enable_uac" => {
                 require_admin()?;
-                util::ps(r"Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -Value 1 -Type DWord")?;
+                util::ps_timeout(r"Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -Value 1 -Type DWord", 60)?;
                 "reboot".to_string()
             }
             "enable_wu" => {
                 require_admin()?;
-                util::ps("Set-Service -Name wuauserv -StartupType Manual; Start-Service -Name wuauserv -ErrorAction SilentlyContinue")?;
+                let before = crate::services::start_type("wuauserv");
+                util::ps_timeout("Set-Service -Name wuauserv -StartupType Manual; Start-Service -Name wuauserv -ErrorAction SilentlyContinue", 120)?;
+                undo = before.map(|mode| Undo::ServiceMode { name: "wuauserv".into(), mode });
                 String::new()
             }
             "disable_startup" => {
+                // Each item gets its own Journal entry right away, so what was turned off before
+                // a failure can still be put back.
                 for id in args.iter().take(50) {
                     crate::startup::set_enabled(id, false)?;
+                    let name = id.rsplit('|').next().unwrap_or(id);
+                    crate::journal::add_at(&journal_dir, "startup_off", name, "", Some(Undo::Startup { id: id.clone(), enabled: true }));
                 }
                 String::new()
             }
             "restore_hosts" => restore_hosts(&data_dir)?,
             "disable_proxy" => {
                 use winreg::enums::*;
-                let (k, _) = winreg::RegKey::predef(HKEY_CURRENT_USER)
-                    .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-                    .map_err(|e| e.to_string())?;
-                k.set_value("ProxyEnable", &0u32).map_err(|e| e.to_string())?;
-                refresh_internet_settings();
+                let before: u32 = winreg::RegKey::predef(HKEY_CURRENT_USER)
+                    .open_subkey(INET_SETTINGS)
+                    .and_then(|k| k.get_value("ProxyEnable"))
+                    .unwrap_or(0);
+                set_proxy_enable(0)?;
+                undo = (before != 0).then_some(Undo::Proxy { enable: before });
                 String::new()
             }
             "repair_system" => {
@@ -1110,9 +1149,12 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                     return Err(tr("Восстановление уже выполняется", "Repair is already running"));
                 }
                 // Official Windows repair: component store first, then system files.
+                // "Stop" ends it; a hung step is ended after an hour.
+                crate::ops::begin(crate::ops::Op::Repair);
                 let res = (|| {
-                    let (ok1, o1, e1) = util::run_hidden("DISM.exe", &["/Online", "/Cleanup-Image", "/RestoreHealth"])?;
-                    let (ok2, o2, e2) = util::run_hidden("sfc.exe", &["/scannow"])?;
+                    let op = crate::ops::Op::Repair;
+                    let (ok1, o1, e1) = util::run_hidden_limit("DISM.exe", &["/Online", "/Cleanup-Image", "/RestoreHealth"], 3600, op)?;
+                    let (ok2, o2, e2) = util::run_hidden_limit("sfc.exe", &["/scannow"], 3600, op)?;
                     if !ok1 && !ok2 {
                         let msg = [e1, e2, o1, o2].iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
                         let short: String = msg.chars().take(400).collect();
@@ -1137,7 +1179,7 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
             }
             _ => return Err(tr("Неизвестное исправление", "Unknown fix")),
         };
-        crate::journal::add_at(&journal_dir, "diag_fix", &fix_id, &note, None);
+        crate::journal::add_at(&journal_dir, "diag_fix", &fix_id, &note, undo);
         Ok(FixResult { ok: true, note })
     })
     .await
@@ -1146,6 +1188,13 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_guid_any_language() {
+        let ru = "GUID схемы питания: 381b4222-f694-41f0-9685-ff5bb260df2e  (Сбалансированная)";
+        assert_eq!(active_scheme_guid(ru).as_deref(), Some("381b4222-f694-41f0-9685-ff5bb260df2e"));
+        assert_eq!(active_scheme_guid("no guid here"), None);
+    }
 
     fn healthy() -> (PsRaw, LocalRaw) {
         let ps = PsRaw {

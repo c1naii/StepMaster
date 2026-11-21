@@ -126,6 +126,10 @@ pub fn run() {
                     if autostart && util::is_admin() {
                         let _ = settings::apply_autostart(true);
                     }
+                    // First run on a PC without winget: put it in now, so "Install" just works.
+                    if util::is_admin() {
+                        let _ = winget::ensure_winget();
+                    }
                 });
             }
 
@@ -165,11 +169,14 @@ pub fn run() {
             updater::update_check,
             updater::update_install,
             updater::update_notes,
+            updater::whats_new,
+            updater::whats_new_seen,
             icons::icons_get,
             installer::install_state,
             installer::install_run,
             installer::uninstall_run,
             winget::winget_state,
+            winget::winget_setup,
             winget::winget_install,
             winget::winget_cancel,
             winget::winget_search,

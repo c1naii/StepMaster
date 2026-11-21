@@ -71,6 +71,62 @@ pub async fn winget_state(state: State<'_, AppState>) -> Res<WingetState> {
     util::blocking(move || read_state(&tmp)).await
 }
 
+/// winget appears a few seconds after App Installer is registered: wait for the alias.
+fn wait_exe(secs: u64) -> bool {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        if winget_exe().is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    winget_exe().is_some()
+}
+
+const REGISTER: &str = "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe";
+
+/// Puts winget on a PC that lacks it (Windows 10 without "App Installer"), without the Store.
+/// The way from Microsoft's docs: register App Installer if it's only unregistered, otherwise the
+/// official Microsoft.WinGet.Client module (PSGallery) runs Repair-WinGetPackageManager, which
+/// downloads winget and its dependencies from Microsoft; Windows checks their signature on install.
+/// Runs once at a time: the startup run and the "Install" tab share it.
+pub fn ensure_winget() -> Res<()> {
+    static SETUP: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _g = SETUP.lock();
+    if winget_exe().is_some() {
+        return Ok(());
+    }
+    let _ = util::ps_timeout(REGISTER, 90);
+    if wait_exe(5) {
+        return Ok(());
+    }
+    let script = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; \
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null; \
+        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -Scope AllUsers | Out-Null; \
+        Import-Module Microsoft.WinGet.Client; \
+        Repair-WinGetPackageManager -AllUsers | Out-Null";
+    let res = util::ps_timeout(script, 900);
+    let _ = util::ps_timeout(REGISTER, 90);
+    if wait_exe(15) {
+        return Ok(());
+    }
+    Err(match res {
+        Err(e) => format!("{} ({e})", tr("Не удалось установить winget", "Couldn't install winget")),
+        Ok(_) => tr("Не удалось установить winget", "Couldn't install winget"),
+    })
+}
+
+/// "Install" tab without winget: installs it, then returns the fresh state.
+#[tauri::command]
+pub async fn winget_setup(state: State<'_, AppState>) -> Res<WingetState> {
+    let tmp = state.data_dir.join("winget-export.json");
+    util::blocking(move || {
+        ensure_winget()?;
+        read_state(&tmp)
+    })
+    .await
+}
+
 fn read_state(tmp: &std::path::Path) -> Res<WingetState> {
     {
         let Some(_) = winget_exe() else {

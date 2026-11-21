@@ -88,7 +88,7 @@ pub async fn firewall_set(app: tauri::AppHandle, enabled: bool) -> Res<()> {
             30,
         )
         .unwrap_or_default();
-        util::ps(&format!("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled {v}"))
+        util::ps_timeout(&format!("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled {v}"), 90)
             .map(|_| ())
             .map_err(|e| format!("{}: {e}", tr("Не удалось изменить брандмауэр", "Couldn't change the firewall")))?;
         let undo = (!before.is_empty()).then_some(crate::journal::Undo::Firewall { profiles: before });

@@ -251,6 +251,7 @@ pub async fn game_apply(app: AppHandle, options: Options) -> Res<Status> {
         return Err(util::need_admin());
     }
     util::blocking(move || {
+        let _g = GAME_LOCK.lock();
         let st = app.state::<AppState>();
         let dir = st.data_dir.clone();
         let mut saved = load(&dir);
@@ -344,7 +345,11 @@ pub async fn game_revert(app: AppHandle) -> Res<Status> {
 }
 
 /// Puts back everything game mode changed (also used by uninstall).
+/// Turn on / turn off one at a time: a double click must not save already-changed values as "previous".
+static GAME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub fn revert_at(dir: &std::path::Path) -> Res<Status> {
+    let _g = GAME_LOCK.lock();
     {
         let dir = dir.to_path_buf();
         let saved = load(&dir);

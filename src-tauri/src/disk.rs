@@ -330,6 +330,17 @@ fn strip_verbatim(p: &Path) -> PathBuf {
 }
 
 /// Moves files/folders to the Recycle Bin (recoverable). Protected system paths are refused.
+/// The path is on a local fixed drive (C:, D:…), where Windows keeps a Recycle Bin.
+fn has_recycle_bin(path: &Path) -> bool {
+    use std::path::Component;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_FIXED: u32 = 3;
+    let Some(Component::Prefix(pre)) = path.components().next() else { return false };
+    let root: Vec<u16> = format!("{}\\", pre.as_os_str().to_string_lossy()).encode_utf16().chain(std::iter::once(0)).collect();
+    // A \server\share prefix gives DRIVE_REMOTE / NO_ROOT_DIR: refused too.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED }
+}
+
 pub fn recycle_paths(paths: &[String]) -> (Vec<PathBuf>, Vec<String>) {
     let mut done = Vec::new();
     let mut failed = Vec::new();
@@ -353,6 +364,12 @@ pub fn recycle_paths(paths: &[String]) -> (Vec<PathBuf>, Vec<String>) {
         let full_real = fs::canonicalize(&raw).ok().map(|c| strip_verbatim(&c));
         if is_protected_path(&path) || is_protected_path(&raw) || full_real.as_deref().map(is_protected_path).unwrap_or(false) {
             failed.push(format!("{p} — {}", tr("системный путь, удалять нельзя", "system path, not allowed")));
+            continue;
+        }
+        // Only local fixed drives have a Recycle Bin: on a USB stick, card or network share
+        // Windows would delete the file for good. Refuse there instead.
+        if !has_recycle_bin(&path) {
+            failed.push(format!("{p} — {}", tr("на этом диске нет Корзины, удалите вручную", "this drive has no Recycle Bin, delete it manually")));
             continue;
         }
         match trash::delete(&path) {

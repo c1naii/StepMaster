@@ -731,6 +731,9 @@ pub async fn program_uninstall(app: AppHandle, id: String, name: Option<String>)
             }
             ["p", path @ ..] => {
                 let p = path.join("|");
+                if !portable_root_ok(&p) {
+                    return Err(tr("Неверная программа", "Invalid program"));
+                }
                 let (done, failed) = recycle_paths(&[p]);
                 if let Some(f) = failed.first() {
                     return Err(f.clone());
@@ -819,4 +822,17 @@ mod tests {
         assert!(is_protected_program("Microsoft Visual C++ 2015-2022 Redistributable (x64)"));
         assert!(!is_protected_program("Google Chrome"));
     }
+}
+
+/// A portable program's folder must sit directly in Program Files or %LOCALAPPDATA%\Programs:
+/// the path comes from the UI, so nothing else can be sent to the Recycle Bin through here.
+fn portable_root_ok(p: &str) -> bool {
+    let Some(parent) = std::path::Path::new(p).parent() else { return false };
+    let norm = |x: &std::path::Path| x.to_string_lossy().trim_end_matches('\\').to_ascii_lowercase();
+    let par = norm(parent);
+    ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|v| env_path(v))
+        .chain(env_path("LOCALAPPDATA").map(|l| l.join("Programs")))
+        .any(|r| norm(&r) == par)
 }

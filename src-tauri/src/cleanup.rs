@@ -324,7 +324,7 @@ pub async fn cleanup_run(app: AppHandle, ids: Vec<String>) -> Res<CleanResult> {
         let admin = util::is_admin();
         let mut total = Deleted::default();
         let mut per = Vec::new();
-        crate::ops::begin(crate::ops::Op::Cleanup);
+        let _run = crate::ops::start(crate::ops::Op::Cleanup)?;
         for id in ids.iter().filter(|i| IDS.contains(&i.as_str())) {
             // "Stop": finish the file being deleted, skip the rest (what was freed is still reported).
             if crate::ops::cancelled(crate::ops::Op::Cleanup) {
@@ -342,7 +342,6 @@ pub async fn cleanup_run(app: AppHandle, ids: Vec<String>) -> Res<CleanResult> {
             let _ = app.emit("cleanup://progress", Progress { id: id.clone(), phase: "done" });
         }
         let stopped = crate::ops::cancelled(crate::ops::Op::Cleanup);
-        crate::ops::begin(crate::ops::Op::Cleanup); // don't leave the flag up for other cleaners
         if total.freed > 0 {
             add_history(&data_dir, total.freed);
             crate::journal::add_at(&data_dir, "cleanup", "", &total.freed.to_string(), None);
@@ -373,8 +372,8 @@ pub fn safe_junk_size(admin: bool) -> u64 {
 
 /// Cleans the safe categories; returns bytes freed (also recorded in history).
 pub fn clean_safe(data_dir: &Path, admin: bool) -> u64 {
-    // A late "Stop" from the Cleanup page must not silently skip this (shared delete code).
-    crate::ops::begin(crate::ops::Op::Cleanup);
+    // The Cleanup page is already cleaning: don't run a second cleaner over the same folders.
+    let Ok(_run) = crate::ops::start(crate::ops::Op::Cleanup) else { return 0 };
     let mut total = Deleted::default();
     for id in safe_ids(admin) {
         for t in targets(id) {
