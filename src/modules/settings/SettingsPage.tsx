@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle2, Download, FolderOpen, Keyboard, RefreshCw } 
 import { HotkeysDialog } from "./HotkeysDialog";
 import { useRef, useState } from "react";
 import { PageHeader, Spinner, Tabs, Toggle, notify } from "../../components/ui";
-import { fmt, useT } from "../../i18n";
+import { LANGS, fmt, useT } from "../../i18n";
 import { api, errorText } from "../../lib/api";
 import { useStore } from "../../lib/store";
 import type { Lang, MotionLevel, Settings } from "../../lib/types";
@@ -64,14 +64,19 @@ export function SettingsPage() {
             <div className="setting-title">{t.settings.language}</div>
             <div className="setting-desc">{t.settings.languageDesc}</div>
           </div>
-          <Tabs<Lang>
+          <select
+            className="select"
+            style={{ minWidth: 190 }}
             value={settings.language}
-            onChange={(v) => void save({ language: v })}
-            items={[
-              { id: "ru", label: "Русский" },
-              { id: "en", label: "English" },
-            ]}
-          />
+            aria-label={t.settings.language}
+            onChange={(e) => void save({ language: e.target.value as Lang })}
+          >
+            {LANGS.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="setting-row">
           <div className="setting-text">
@@ -105,6 +110,13 @@ export function SettingsPage() {
             <div className="setting-desc">{t.settings.trayMonitorDesc}</div>
           </div>
           <Toggle checked={settings.trayMonitor} disabled={saving} label={t.settings.trayMonitor} onChange={(v) => void save({ trayMonitor: v })} />
+        </div>
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-title">{t.settings.updateNotify}</div>
+            <div className="setting-desc">{t.settings.updateNotifyDesc}</div>
+          </div>
+          <Toggle checked={settings.updateNotify} disabled={saving} label={t.settings.updateNotify} onChange={(v) => void save({ updateNotify: v })} />
         </div>
         <div className="setting-row">
           <div className="setting-text">

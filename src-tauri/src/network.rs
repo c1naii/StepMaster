@@ -367,9 +367,273 @@ pub async fn wifi_profiles() -> Res<Vec<WifiProfile>> {
     .await
 }
 
+/* ---------------- Wi-Fi analysis ---------------- */
+
+#[derive(Serialize, Default, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiAnalysis {
+    pub connected: bool,
+    pub adapter: String,
+    pub ssid: String,
+    /// "2.4" | "5" | "6" ("" if unknown).
+    pub band: String,
+    pub channel: u32,
+    /// 0–100 (Windows signal quality).
+    pub signal: u32,
+    pub rssi: Option<i32>,
+    pub rx_mbps: u32,
+    pub tx_mbps: u32,
+    /// Wi-Fi standard of the current connection, e.g. "802.11n".
+    pub standard: String,
+    /// Can the adapter use 5 GHz at all (None = unknown).
+    pub supports5: Option<bool>,
+    /// Other networks on the same or an overlapping channel.
+    pub neighbors: u32,
+    /// Networks the adapter sees in total.
+    pub networks: u32,
+    /// 2.4 GHz only: a clearly less busy channel (1, 6 or 11), if there is one.
+    pub better_channel: Option<u32>,
+    /// USB/PCIe power saving of the adapter (None = the driver has no such setting).
+    pub selective_suspend: Option<bool>,
+    /// Advice codes, the UI turns them into text (network.wifiTips.<code>).
+    pub tips: Vec<String>,
+}
+
+/// Wi-Fi channel from the centre frequency in kHz.
+pub fn channel_of(khz: u32) -> u32 {
+    let mhz = khz / 1000;
+    match mhz {
+        2484 => 14,
+        2412..=2472 => (mhz - 2407) / 5,
+        5150..=5895 => (mhz - 5000) / 5,
+        5955..=7115 => (mhz - 5950) / 5,
+        _ => 0,
+    }
+}
+
+pub fn band_of(khz: u32) -> &'static str {
+    match khz / 1000 {
+        2400..=2500 => "2.4",
+        5150..=5895 => "5",
+        5925..=7125 => "6",
+        _ => "",
+    }
+}
+
+/// 2.4 GHz channels closer than 5 apart overlap (20 MHz wide); on 5/6 GHz only the same channel counts.
+pub fn overlaps(band: &str, a: u32, b: u32) -> bool {
+    if band == "2.4" { a.abs_diff(b) < 5 } else { a == b }
+}
+
+/// Picks 1, 6 or 11 with the fewest overlapping networks, if it beats the current channel by 2+.
+pub fn better_24_channel(current: u32, others: &[u32]) -> Option<u32> {
+    let busy = |ch: u32| others.iter().filter(|o| overlaps("2.4", ch, **o)).count();
+    let (best, n) = [1u32, 6, 11].iter().map(|&c| (c, busy(c))).min_by_key(|&(c, n)| (n, c.abs_diff(current)))?;
+    (best != current && n + 2 <= busy(current)).then_some(best)
+}
+
+pub fn wifi_tips(a: &WifiAnalysis) -> Vec<String> {
+    let mut t = Vec::new();
+    if !a.connected {
+        return t;
+    }
+    if a.band == "2.4" {
+        match a.supports5 {
+            Some(false) => t.push("adapter24".to_string()),
+            Some(true) => t.push("use5".to_string()),
+            None => {}
+        }
+        if a.neighbors >= 3 {
+            t.push("crowded".to_string());
+        }
+    }
+    if a.better_channel.is_some() {
+        t.push("channel".to_string());
+    }
+    if a.signal < 50 {
+        t.push("weak".to_string());
+    }
+    if a.selective_suspend == Some(true) {
+        t.push("suspend".to_string());
+    }
+    t
+}
+
+fn phy_name(phy: i32) -> &'static str {
+    // DOT11_PHY_TYPE values.
+    match phy {
+        4 => "802.11a",
+        5 => "802.11b",
+        6 => "802.11g",
+        7 => "802.11n (Wi-Fi 4)",
+        8 => "802.11ac (Wi-Fi 5)",
+        10 => "802.11ax (Wi-Fi 6)",
+        11 => "802.11be (Wi-Fi 7)",
+        _ => "",
+    }
+}
+
+fn guid_string(g: &windows_sys::core::GUID) -> String {
+    format!(
+        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        g.data1, g.data2, g.data3, g.data4[0], g.data4[1], g.data4[2], g.data4[3], g.data4[4], g.data4[5], g.data4[6], g.data4[7]
+    )
+}
+
+/// Reads the connected Wi-Fi adapter through the WLAN API (language-independent).
+fn read_wifi() -> Option<(WifiAnalysis, String)> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::NetworkManagement::WiFi::*;
+    unsafe {
+        let mut version = 0u32;
+        let mut h: HANDLE = std::ptr::null_mut();
+        if WlanOpenHandle(2, std::ptr::null(), &mut version, &mut h) != 0 {
+            return None;
+        }
+        let mut result = None;
+        let mut ifaces: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+        if WlanEnumInterfaces(h, std::ptr::null(), &mut ifaces) == 0 && !ifaces.is_null() {
+            let n = (*ifaces).dwNumberOfItems as usize;
+            let first = (*ifaces).InterfaceInfo.as_ptr();
+            // Prefer the connected adapter, else the first one.
+            let pick = (0..n).find(|&i| (*first.add(i)).isState == wlan_interface_state_connected).or(if n > 0 { Some(0) } else { None });
+            if let Some(i) = pick {
+                let info = &*first.add(i);
+                let guid = info.InterfaceGuid;
+                let mut a = WifiAnalysis { adapter: wide_to_string(&info.strInterfaceDescription), ..Default::default() };
+                a.connected = info.isState == wlan_interface_state_connected;
+
+                // Fresh scan (asynchronous; give it a moment), then the visible networks.
+                if WlanScan(h, &guid, std::ptr::null(), std::ptr::null(), std::ptr::null()) == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(3500));
+                }
+
+                let mut my_bssid = [0u8; 6];
+                if a.connected {
+                    let mut size = 0u32;
+                    let mut data: *mut core::ffi::c_void = std::ptr::null_mut();
+                    if WlanQueryInterface(h, &guid, wlan_intf_opcode_current_connection, std::ptr::null(), &mut size, &mut data, std::ptr::null_mut()) == 0 && !data.is_null() {
+                        let c = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+                        let assoc = &c.wlanAssociationAttributes;
+                        let len = (assoc.dot11Ssid.uSSIDLength as usize).min(32);
+                        a.ssid = String::from_utf8_lossy(&assoc.dot11Ssid.ucSSID[..len]).to_string();
+                        my_bssid = assoc.dot11Bssid;
+                        a.signal = assoc.wlanSignalQuality;
+                        a.rx_mbps = assoc.ulRxRate / 1000;
+                        a.tx_mbps = assoc.ulTxRate / 1000;
+                        a.standard = phy_name(assoc.dot11PhyType).to_string();
+                        WlanFreeMemory(data);
+                    }
+                }
+
+                let mut caps: *mut WLAN_INTERFACE_CAPABILITY = std::ptr::null_mut();
+                if WlanGetInterfaceCapability(h, &guid, std::ptr::null(), &mut caps) == 0 && !caps.is_null() {
+                    let c = &*caps;
+                    let phys = &c.dot11PhyTypes[..(c.dwNumberOfSupportedPhys as usize).min(c.dot11PhyTypes.len())];
+                    // 802.11a (ofdm) and ac (vht) are 5 GHz only; ax/be adapters are dual-band in practice.
+                    a.supports5 = Some(phys.iter().any(|p| [4, 8, 10, 11].contains(p)));
+                    WlanFreeMemory(caps as *const _);
+                }
+
+                let mut list: *mut WLAN_BSS_LIST = std::ptr::null_mut();
+                if WlanGetNetworkBssList(h, &guid, std::ptr::null(), dot11_BSS_type_any, 0, std::ptr::null(), &mut list) == 0 && !list.is_null() {
+                    let count = (*list).dwNumberOfItems as usize;
+                    let entries = (*list).wlanBssEntries.as_ptr();
+                    let mut others: Vec<(String, u32, String)> = Vec::new();
+                    for j in 0..count {
+                        let e = &*entries.add(j);
+                        let band = band_of(e.ulChCenterFrequency);
+                        let ch = channel_of(e.ulChCenterFrequency);
+                        if a.connected && e.dot11Bssid == my_bssid {
+                            a.band = band.to_string();
+                            a.channel = ch;
+                            a.rssi = Some(e.lRssi);
+                        } else {
+                            let len = (e.dot11Ssid.uSSIDLength as usize).min(32);
+                            others.push((String::from_utf8_lossy(&e.dot11Ssid.ucSSID[..len]).to_string(), ch, band.to_string()));
+                        }
+                    }
+                    WlanFreeMemory(list as *const _);
+                    a.networks = others.len() as u32;
+                    if a.channel > 0 {
+                        // Other access points of the same network (mesh, repeaters) are not "neighbours".
+                        let foreign: Vec<u32> = others.iter().filter(|(s, _, b)| *b == a.band && *s != a.ssid).map(|(_, c, _)| *c).collect();
+                        a.neighbors = foreign.iter().filter(|c| overlaps(&a.band, a.channel, **c)).count() as u32;
+                        if a.band == "2.4" {
+                            a.better_channel = better_24_channel(a.channel, &foreign);
+                        }
+                    }
+                }
+                result = Some((a, guid_string(&guid)));
+            }
+            WlanFreeMemory(ifaces as *const _);
+        }
+        WlanCloseHandle(h, std::ptr::null());
+        result
+    }
+}
+
+/// USB/PCIe power saving of the adapter ("Selective Suspend"), read through PowerShell.
+fn selective_suspend(guid: &str) -> Option<bool> {
+    let script = format!(
+        "$a = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{ $_.InterfaceGuid -eq {} }} | Select-Object -First 1; \
+         if ($a) {{ $p = Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue | Where-Object {{ $_.RegistryKeyword -like '*SelectiveSuspend' -or $_.DisplayName -like 'Selective Suspend' }} | Select-Object -First 1; \
+         if ($p) {{ [string]($p.RegistryValue | Select-Object -First 1) }} }}",
+        util::psq(guid)
+    );
+    let out = util::ps_timeout(&script, 30).ok()?;
+    match out.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Analyses the current Wi-Fi connection. None = this PC has no Wi-Fi.
+#[tauri::command]
+pub async fn wifi_analyze() -> Res<Option<WifiAnalysis>> {
+    util::blocking(|| {
+        let Some((mut a, guid)) = read_wifi() else { return Ok(None) };
+        a.selective_suspend = selective_suspend(&guid);
+        a.tips = wifi_tips(&a);
+        Ok(Some(a))
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn channels_from_frequency() {
+        assert_eq!(channel_of(2_412_000), 1);
+        assert_eq!(channel_of(2_437_000), 6);
+        assert_eq!(channel_of(2_484_000), 14);
+        assert_eq!(channel_of(5_180_000), 36);
+        assert_eq!(channel_of(5_955_000), 1);
+        assert_eq!(band_of(2_412_000), "2.4");
+        assert_eq!(band_of(5_180_000), "5");
+        assert_eq!(band_of(5_955_000), "6");
+    }
+    #[test]
+    fn crowded_24_channel() {
+        // Like a real block of flats: me on 1, neighbours on 1, 4, 8, 10, 11.
+        assert!(overlaps("2.4", 1, 4));
+        assert!(!overlaps("2.4", 1, 6));
+        assert!(!overlaps("5", 36, 40));
+        assert_eq!(better_24_channel(1, &[1, 4, 8, 10, 11]), None); // nothing clearly better
+        assert_eq!(better_24_channel(1, &[1, 1, 2, 3]), Some(11)); // 6 still overlaps 2 and 3
+        assert_eq!(better_24_channel(11, &[11, 10, 9, 1]), Some(1)); // 1: one neighbour, 6: two
+        assert_eq!(better_24_channel(6, &[]), None);
+    }
+    #[test]
+    fn tips() {
+        let base = WifiAnalysis { connected: true, band: "2.4".into(), channel: 1, signal: 100, neighbors: 2, supports5: Some(false), selective_suspend: Some(true), ..Default::default() };
+        assert_eq!(wifi_tips(&base), vec!["adapter24", "suspend"]);
+        let five = WifiAnalysis { band: "5".into(), supports5: Some(true), selective_suspend: None, signal: 40, ..base.clone() };
+        assert_eq!(wifi_tips(&five), vec!["weak"]);
+        assert!(wifi_tips(&WifiAnalysis::default()).is_empty());
+    }
     #[test]
     fn xml() {
         let x = "<WLANProfile><name>Cafe &amp; Bar</name><authentication>WPA2PSK</authentication><keyMaterial>p&lt;w</keyMaterial></WLANProfile>";

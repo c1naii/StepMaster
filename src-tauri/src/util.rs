@@ -10,14 +10,17 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub type Res<T> = Result<T, String>;
 
-/// Current UI language ("ru" / "en"), used for backend error messages.
+/// Interface languages the app supports (same list as the UI's i18n).
+pub const LANGS: &[&str] = &["ru", "en", "uk", "es", "fr", "de", "pt", "zh"];
+
+/// Current UI language, used for backend messages: Russian for "ru", English for every other one.
 pub static LANG: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new("ru".into()));
 
 pub fn tr(ru: &str, en: &str) -> String {
-    if LANG.read().as_str() == "en" {
-        en.to_string()
-    } else {
+    if LANG.read().as_str() == "ru" {
         ru.to_string()
+    } else {
+        en.to_string()
     }
 }
 

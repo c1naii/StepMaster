@@ -15,6 +15,8 @@ pub struct Settings {
     pub motion: String,
     pub hotkey: String,
     pub tray_monitor: bool,
+    /// Show the update popup (bottom-right) even when the window isn't open.
+    pub update_notify: bool,
 }
 
 impl Default for Settings {
@@ -27,13 +29,14 @@ impl Default for Settings {
             motion: "full".into(),
             hotkey: "Ctrl+Shift+Space".into(),
             tray_monitor: true,
+            update_notify: true,
         }
     }
 }
 
 impl Settings {
     fn sanitized(mut self) -> Self {
-        if self.language != "ru" && self.language != "en" {
+        if !crate::util::LANGS.contains(&self.language.as_str()) {
             self.language = "ru".into();
         }
         if !["full", "reduced", "off"].contains(&self.motion.as_str()) {
@@ -74,17 +77,29 @@ const TASK_NAME: &str = "StepMaster";
 /// Registers (or removes) a logon task that starts the app elevated without a UAC prompt.
 /// Task Scheduler is used instead of the Run key because the app requires admin rights.
 pub fn apply_autostart(enabled: bool) -> Res<()> {
-    if !enabled {
-        let (exists, _, _) = util::run_hidden("schtasks.exe", &["/Query", "/TN", TASK_NAME])?;
-        if !exists {
-            return Ok(());
-        }
-        let (ok, out, err) = util::run_hidden("schtasks.exe", &["/Delete", "/TN", TASK_NAME, "/F"])?;
-        if !ok {
-            return Err(if err.trim().is_empty() { out } else { err });
-        }
+    if enabled {
+        register_logon_task(TASK_NAME, "StepMaster autostart", "--autostart", "PT10S", "PT0S")
+    } else {
+        delete_task(TASK_NAME)
+    }
+}
+
+/// Removes a scheduled task if it exists.
+pub fn delete_task(name: &str) -> Res<()> {
+    let (exists, _, _) = util::run_hidden("schtasks.exe", &["/Query", "/TN", name])?;
+    if !exists {
         return Ok(());
     }
+    let (ok, out, err) = util::run_hidden("schtasks.exe", &["/Delete", "/TN", name, "/F"])?;
+    if !ok {
+        return Err(if err.trim().is_empty() { out } else { err });
+    }
+    Ok(())
+}
+
+/// Registers a task that starts this exe elevated at the current user's logon, without a UAC
+/// prompt. `delay` / `limit` are ISO 8601 durations ("PT10S"; "PT0S" = no time limit).
+pub fn register_logon_task(name: &str, description: &str, args: &str, delay: &str, limit: &str) -> Res<()> {
     if !util::is_admin() {
         return Err(util::need_admin());
     }
@@ -98,9 +113,9 @@ pub fn apply_autostart(enabled: bool) -> Res<()> {
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>StepMaster autostart</Description></RegistrationInfo>
+  <RegistrationInfo><Description>{description}</Description></RegistrationInfo>
   <Triggers>
-    <LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId><Delay>PT10S</Delay></LogonTrigger>
+    <LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId><Delay>{delay}</Delay></LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal>
@@ -117,20 +132,24 @@ pub fn apply_autostart(enabled: bool) -> Res<()> {
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <ExecutionTimeLimit>{limit}</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>{exe}</Command><Arguments>--autostart</Arguments></Exec>
+    <Exec><Command>{exe}</Command><Arguments>{args}</Arguments></Exec>
   </Actions>
 </Task>"#,
+        description = xml_escape(description),
         user = xml_escape(&user),
+        delay = xml_escape(delay),
+        limit = xml_escape(limit),
         exe = xml_escape(&exe.to_string_lossy()),
+        args = xml_escape(args),
     );
     // Registered straight from memory: no temp file another process could swap.
     util::ps(&format!(
         "Register-ScheduledTask -TaskName {} -Xml {} -Force | Out-Null",
-        util::psq(TASK_NAME),
+        util::psq(name),
         util::psq(&xml)
     ))
     .map(|_| ())
@@ -181,6 +200,10 @@ pub async fn settings_set(app: AppHandle, settings: Settings) -> Res<Settings> {
             }
             return Err(e);
         }
+    }
+    if new.update_notify != old.update_notify {
+        let enable = new.update_notify;
+        util::blocking(move || crate::notify::apply_task(enable)).await?;
     }
     if new.language != old.language {
         *util::LANG.write() = new.language.clone();

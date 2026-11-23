@@ -95,9 +95,13 @@ let settings: Settings = {
   motion: "full",
   hotkey: "Ctrl+Shift+Space",
   trayMonitor: true,
+  updateNotify: true,
 };
 
-let game: GameModeStatus = { active: false, since: null, applied: [], isLaptop: true };
+let game: GameModeStatus = { active: false, since: null, applied: [], isLaptop: true, relaunch: [], proxyOn: true };
+const displays = [
+  { device: "\\\\.\\DISPLAY1", name: "Generic PnP Monitor", width: 1920, height: 1080, current: 60, rates: [50, 59, 60, 75], primary: true },
+];
 const startup: StartupItem[] = [
   { id: "hkcu:Discord", name: "Discord", command: "C:\\Users\\Step\\AppData\\Local\\Discord\\Update.exe --processStart Discord.exe", location: "HKCU Run", enabled: true, exePath: null },
   { id: "hkcu:Steam", name: "Steam", command: "\"C:\\Program Files (x86)\\Steam\\steam.exe\" -silent", location: "HKCU Run", enabled: true, exePath: null },
@@ -176,6 +180,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
   open_app_dir: () => undefined,
   reveal_path: () => undefined,
   // Update window preview: localStorage.setItem("sm-update", "1") (or the "worst" mode).
+  toast_ready: () => undefined,
+  toast_close: () => undefined,
   update_check: () => ({ available: mode() === "worst" || localStorage.getItem("sm-update") === "1" }),
   // The real release files, so this window always shows what the next release will show.
   update_notes: async () => {
@@ -478,6 +484,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
       { code: "shutdowns", category: "system", severity: "medium", params: { n: "3", last: "2026-11-07 20:46" }, details: [], fix: null, fixArgs: [], open: null },
       { code: "startup", category: "performance", severity: "low", params: { n: "15" }, details: [], fix: null, fixArgs: [], open: "nav:system:startup" },
       { code: "uptime", category: "performance", severity: "info", params: { days: "9" }, details: [], fix: null, fixArgs: [], open: null },
+      { code: "refresh_rate", category: "performance", severity: "low", params: { display: "Generic PnP Monitor", cur: "60", max: "75" }, details: ["Generic PnP Monitor: 60 → 75 Hz"], fix: "refresh_max", fixArgs: ["\\\\.\\DISPLAY1", "75"], open: "nav:games" },
     ];
     const codes = ["cpu_load", "memory", "junk", "power_plan", "reboot_pending", "cpu_temp", "gpu_temp", "throttling", "disk_health", "devices", "hw_errors", "bsod", "disk_errors", "app_crashes", "wu_service", "uac", "defender_off", "signatures", "last_scan", "exclusions", "processes_suspicious", "tasks_suspicious", "hosts", "proxy"];
     const cat = (c: string) => (["cpu_temp", "gpu_temp", "throttling"].includes(c) ? "thermal" : ["disk_health", "devices", "hw_errors"].includes(c) ? "hardware" : ["bsod", "disk_errors", "app_crashes", "wu_service", "uac"].includes(c) ? "system" : ["defender_off", "signatures", "last_scan", "exclusions", "processes_suspicious", "tasks_suspicious", "hosts", "proxy"].includes(c) ? "security" : "performance");
@@ -592,15 +599,54 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown | Prom
     { ssid: "Cafe Free WiFi", password: null, auth: "open" },
   ],
 
+  wifi_analyze: async () => {
+    await sleep(1500);
+    if (mode() === "empty") return null;
+    const worst = mode() === "worst";
+    return {
+      connected: true,
+      adapter: "802.11n USB Wireless LAN Card",
+      ssid: worst ? "Очень-длинное-название-сети-соседа-за-стенкой-5G-Extended" : "Home_WiFi",
+      band: "2.4",
+      channel: 1,
+      signal: worst ? 22 : 100,
+      rssi: worst ? -84 : -33,
+      rxMbps: 144,
+      txMbps: 72,
+      standard: "802.11n (Wi-Fi 4)",
+      supports5: false,
+      neighbors: worst ? 14 : 5,
+      networks: worst ? 37 : 12,
+      betterChannel: worst ? 11 : null,
+      selectiveSuspend: worst ? true : false,
+      tips: worst ? ["adapter24", "crowded", "channel", "weak", "suspend"] : ["adapter24", "crowded"],
+    };
+  },
+  display_list: () => displays.map((d) => ({ ...d, rates: [...d.rates] })),
+  display_set_rate: async (a) => {
+    await sleep(500);
+    const d = displays.find((x) => x.device === a.device);
+    if (d) d.current = Number(a.hz);
+  },
+
   game_status: () => ({ ...game }),
-  game_apply: async () => {
+  game_apply: async (a) => {
     await sleep(900);
-    game = { active: true, since: Date.now() / 1000, applied: ["powerPlan", "gameMode", "visualEffects", "pauseUpdates"], isLaptop: true };
+    const o = (a.options ?? {}) as { closeApps?: string[]; relaunch?: boolean; disableProxy?: boolean };
+    const relaunch = o.relaunch ? (o.closeApps ?? []) : [];
+    game = {
+      active: true,
+      since: Date.now() / 1000,
+      applied: ["powerPlan", "gameMode", "visualEffects", "pauseUpdates", ...(o.disableProxy ? ["disableProxy"] : []), ...(relaunch.length ? ["relaunch"] : [])],
+      isLaptop: true,
+      relaunch,
+      proxyOn: !o.disableProxy,
+    };
     return { ...game };
   },
   game_revert: async () => {
     await sleep(600);
-    game = { active: false, since: null, applied: [], isLaptop: true };
+    game = { active: false, since: null, applied: [], isLaptop: true, relaunch: [], proxyOn: true };
     return { ...game };
   },
   game_candidates: () => [

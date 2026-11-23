@@ -36,7 +36,7 @@ import type {
   WingetHit,
   WifiProfile,
 } from "./types";
-import type { JournalEntry, StoppableOp, UpdateNotes, WallAddResult, WallOptions, WallState, WhatsNew } from "./types";
+import type { DisplayInfo, JournalEntry, StoppableOp, UpdateNotes, WallAddResult, WallOptions, WallState, WhatsNew, WifiAnalysis } from "./types";
 import { mock } from "./mock";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -93,6 +93,8 @@ export const api = {
   reveal: (path: string) => call<void>("reveal_path", { path }),
   updateCheck: () => call<UpdateCheck>("update_check"),
   updateNotes: () => call<UpdateNotes>("update_notes"),
+  toastReady: () => call<void>("toast_ready"),
+  toastClose: () => call<void>("toast_close"),
   whatsNew: () => call<WhatsNew | null>("whats_new"),
   whatsNewSeen: () => call<void>("whats_new_seen"),
   updateInstall: () => call<void>("update_install"),
@@ -169,6 +171,11 @@ export const api = {
   speedTest: () => call<SpeedResult>("speed_test"),
   connections: () => call<Connection[]>("connections_list"),
   wifiProfiles: () => call<WifiProfile[]>("wifi_profiles"),
+  wifiAnalyze: () => call<WifiAnalysis | null>("wifi_analyze"),
+
+  // monitors
+  displayList: () => call<DisplayInfo[]>("display_list"),
+  displaySetRate: (device: string, hz: number) => call<void>("display_set_rate", { device, hz }),
 
   // games
   gameStatus: () => call<GameModeStatus>("game_status"),

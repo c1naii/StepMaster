@@ -17,9 +17,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader, Ring, Spinner, Toggle, notify, stagger, useCalm, StopButton } from "../../components/ui";
 import { fmt, useLang, useT } from "../../i18n";
 import { api, errorText, on } from "../../lib/api";
-import { formatDate } from "../../lib/format";
+import { decimalComma, formatDate } from "../../lib/format";
 import { ask, useStore, type ModuleId } from "../../lib/store";
-import type { DiagCategory, DiagIssue, DiagProgress, DiagReport } from "../../lib/types";
+import type { DiagCategory, DiagIssue, DiagProgress, DiagReport, Lang } from "../../lib/types";
 
 const CAT_ICON: Record<DiagCategory, typeof Cpu> = {
   performance: Cpu,
@@ -40,8 +40,8 @@ const CONFIRM_FIRST = new Set(["remove_threats", "restore_hosts", "disable_start
 type FixState = { state: "idle" | "busy" | "done" | "error"; msg?: string };
 
 /** Numbers come from the backend as "18.2"; Russian uses a decimal comma. */
-function localize(params: Record<string, string>, lang: string): Record<string, string> {
-  if (lang !== "ru") return params;
+function localize(params: Record<string, string>, lang: Lang): Record<string, string> {
+  if (!decimalComma(lang)) return params;
   return Object.fromEntries(Object.entries(params).map(([k, v]) => [k, /^\d+\.\d+$/.test(v) ? v.replace(".", ",") : v]));
 }
 

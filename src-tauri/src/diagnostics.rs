@@ -148,6 +148,10 @@ pub struct LocalRaw {
     pub proxy: Option<String>,
     pub reboot_pending: bool,
     pub defender_scanned: bool,
+    /// Monitors running below their best refresh rate: (device, name, current Hz, max Hz).
+    pub displays_low: Vec<(String, String, u32, u32)>,
+    /// False if Windows reported no monitors (then the check is skipped).
+    pub displays_known: bool,
 }
 
 /* ------------------------------------------------------------------ */
@@ -268,6 +272,15 @@ pub fn evaluate(ps: &PsRaw, l: &LocalRaw) -> (Vec<Issue>, Vec<CheckRow>, u32) {
         o.issue("uptime", c, if l.uptime_days >= 30 { "low" } else { "info" }, &[("days", l.uptime_days.to_string())], vec![], None, vec![], None);
     } else {
         o.ok("uptime", c);
+    }
+    if !l.displays_known {
+        o.skip("refresh_rate", c);
+    } else if let Some((_, name, cur, max)) = l.displays_low.first() {
+        let details = l.displays_low.iter().map(|(_, n, c, m)| format!("{n}: {c} → {m} Hz")).collect();
+        let args = l.displays_low.iter().flat_map(|(d, _, _, m)| [d.clone(), m.to_string()]).collect();
+        o.issue("refresh_rate", c, "low", &[("display", name.clone()), ("cur", cur.to_string()), ("max", max.to_string())], details, Some("refresh_max"), args, Some("nav:games"));
+    } else {
+        o.ok("refresh_rate", c);
     }
     if l.reboot_pending {
         o.issue("reboot_pending", c, "low", &[], vec![], None, vec![], None);
@@ -874,6 +887,16 @@ fn collect_local(state: &AppState, defender_scanned: bool) -> LocalRaw {
         .unwrap_or(false);
     l.junk_bytes = crate::cleanup::safe_junk_size(l.admin);
     l.gpu_temp = nvidia_gpu_temp();
+    let displays = crate::display::list();
+    l.displays_known = !displays.is_empty();
+    l.displays_low = displays
+        .into_iter()
+        .filter(|d| d.max_rate() > d.current)
+        .map(|d| {
+            let max = d.max_rate();
+            (d.device, d.name, d.current, max)
+        })
+        .collect();
 
     // Registry facts.
     l.uac_enabled = reg_dword(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "EnableLUA").map(|v| v != 0).unwrap_or(true);
@@ -1131,6 +1154,19 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
                 }
                 String::new()
             }
+            "refresh_max" => {
+                // Pairs: device, rate. Each monitor gets its own Journal entry right away.
+                for pair in args.chunks(2).take(16) {
+                    let [device, hz] = pair else { continue };
+                    let hz: u32 = hz.parse().map_err(|_| tr("Неверная частота", "Invalid refresh rate"))?;
+                    let name = crate::display::list().into_iter().find(|d| d.device.eq_ignore_ascii_case(device)).map(|d| d.name).unwrap_or_else(|| device.clone());
+                    let prev = crate::display::set_rate(device, hz)?;
+                    if prev != hz {
+                        crate::journal::add_at(&journal_dir, "refresh_rate", &name, &hz.to_string(), Some(Undo::Refresh { device: device.clone(), hz: prev }));
+                    }
+                }
+                String::new()
+            }
             "restore_hosts" => restore_hosts(&data_dir)?,
             "disable_proxy" => {
                 use winreg::enums::*;
@@ -1188,6 +1224,20 @@ pub async fn diag_fix(app: AppHandle, fix: String, args: Vec<String>) -> Res<Fix
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_rate_below_max() {
+        let (ps, mut l) = healthy();
+        l.displays_known = true;
+        let codes = |l: &LocalRaw| evaluate(&ps, l).0.into_iter().map(|i| i.code).collect::<Vec<_>>();
+        assert!(!codes(&l).contains(&"refresh_rate".to_string()));
+        l.displays_low = vec![(r"\\.\DISPLAY1".into(), "Monitor".into(), 60, 75)];
+        let (issues, _, _) = evaluate(&ps, &l);
+        let i = issues.iter().find(|i| i.code == "refresh_rate").expect("refresh issue");
+        assert_eq!(i.fix.as_deref(), Some("refresh_max"));
+        assert_eq!(i.fix_args, vec![r"\\.\DISPLAY1".to_string(), "75".to_string()]);
+        assert_eq!(i.params.get("max").map(String::as_str), Some("75"));
+    }
 
     #[test]
     fn power_guid_any_language() {

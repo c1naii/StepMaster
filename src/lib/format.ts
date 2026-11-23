@@ -1,9 +1,38 @@
 import type { Lang } from "./types";
 
+const LATIN = ["B", "KB", "MB", "GB", "TB"];
+const CYRILLIC = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
 const UNITS: Record<Lang, string[]> = {
-  ru: ["Б", "КБ", "МБ", "ГБ", "ТБ"],
-  en: ["B", "KB", "MB", "GB", "TB"],
+  ru: CYRILLIC,
+  uk: CYRILLIC,
+  en: LATIN,
+  es: LATIN,
+  de: LATIN,
+  pt: LATIN,
+  zh: LATIN,
+  fr: ["o", "Ko", "Mo", "Go", "To"],
 };
+
+const LOCALES: Record<Lang, string> = {
+  ru: "ru-RU",
+  en: "en-US",
+  uk: "uk-UA",
+  es: "es-ES",
+  fr: "fr-FR",
+  de: "de-DE",
+  pt: "pt-BR",
+  zh: "zh-CN",
+};
+
+/** BCP-47 locale for dates and numbers. */
+export function localeOf(lang: Lang): string {
+  return LOCALES[lang] ?? "en-US";
+}
+
+/** Languages that write 14,2 instead of 14.2. */
+export function decimalComma(lang: Lang): boolean {
+  return lang !== "en" && lang !== "zh";
+}
 
 /** Human-readable size: 14.2 ГБ / 14.2 GB. Handles 0, negatives, NaN. */
 export function formatBytes(bytes: number, lang: Lang = "ru", digits = 1): string {
@@ -16,7 +45,7 @@ export function formatBytes(bytes: number, lang: Lang = "ru", digits = 1): strin
   }
   const d = i === 0 ? 0 : v >= 100 ? 0 : digits;
   const num = v.toFixed(d);
-  const shown = lang === "ru" ? num.replace(".", ",") : num;
+  const shown = decimalComma(lang) ? num.replace(".", ",") : num;
   return `${shown} ${UNITS[lang][i]}`;
 }
 
@@ -35,13 +64,13 @@ export function clamp(v: number, min: number, max: number): number {
 export function formatDecimal(n: number, digits: number, lang: Lang = "ru"): string {
   if (!Number.isFinite(n)) n = 0;
   const s = n.toFixed(digits);
-  return lang === "ru" ? s.replace(".", ",") : s;
+  return decimalComma(lang) ? s.replace(".", ",") : s;
 }
 
 /** Number with locale separators: 12 345 */
 export function formatInt(n: number, lang: Lang = "ru"): string {
   if (!Number.isFinite(n)) return "0";
-  return Math.round(n).toLocaleString(lang === "ru" ? "ru-RU" : "en-US");
+  return Math.round(n).toLocaleString(localeOf(lang));
 }
 
 /** Uptime: "1 д 2 ч 3 мин" */
@@ -50,7 +79,13 @@ export function formatDuration(sec: number, lang: Lang = "ru"): string {
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
-  const u = lang === "ru" ? { d: "д", h: "ч", m: "мин" } : { d: "d", h: "h", m: "min" };
+  const units: Partial<Record<Lang, { d: string; h: string; m: string }>> = {
+    ru: { d: "д", h: "ч", m: "мин" },
+    uk: { d: "д", h: "год", m: "хв" },
+    fr: { d: "j", h: "h", m: "min" },
+    zh: { d: "天", h: "小时", m: "分钟" },
+  };
+  const u = units[lang] ?? { d: "d", h: "h", m: "min" };
   const parts: string[] = [];
   if (d) parts.push(`${d} ${u.d}`);
   if (h || d) parts.push(`${h} ${u.h}`);
@@ -61,7 +96,7 @@ export function formatDuration(sec: number, lang: Lang = "ru"): string {
 /** Date from unix seconds -> "15 нояб. 2026, 21:04" */
 export function formatDate(unixSec: number, lang: Lang = "ru"): string {
   if (!Number.isFinite(unixSec) || unixSec <= 0) return "—";
-  return new Date(unixSec * 1000).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", {
+  return new Date(unixSec * 1000).toLocaleString(localeOf(lang), {
     day: "numeric",
     month: "short",
     year: "numeric",

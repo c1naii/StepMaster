@@ -130,3 +130,14 @@ fn smoke_read_only() {
         Err(e) => println!("cleanup ERROR: {e}"),
     }
 }
+
+#[test]
+#[ignore]
+fn smoke_display_and_wifi() {
+    show("displays", &crate::display::list());
+    let t = std::time::Instant::now();
+    match block_on(crate::network::wifi_analyze()) {
+        Ok(v) => show(&format!("wifi_analyze ({:?})", t.elapsed()), &v),
+        Err(e) => println!("\n== wifi_analyze ERROR: {e}"),
+    }
+}

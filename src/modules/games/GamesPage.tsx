@@ -1,4 +1,4 @@
-import { Gamepad2, Plus, Rocket, Trash2, Zap } from "lucide-react";
+import { Gamepad2, Monitor, Plus, Rocket, Trash2, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Checkbox, Empty, ErrorState, PageHeader, Skeleton, Spinner, Toggle, notify } from "../../components/ui";
 import { fmt, useLang, useT } from "../../i18n";
@@ -9,6 +9,85 @@ import { AppIcon } from "../../components/AppIcon";
 import { useStore } from "../../lib/store";
 import type { GameModeOptions } from "../../lib/types";
 
+/** Refresh rate of each monitor: any rate the monitor reports, or the highest in one click. */
+function RefreshRateCard() {
+  const t = useT();
+  const list = useAsync(api.displayList);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const setRate = async (device: string, hz: number) => {
+    setBusy(device);
+    try {
+      await api.displaySetRate(device, hz);
+      notify.ok(fmt(t.games.displaySet, { hz: String(hz) }));
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setBusy(null);
+      void list.reload();
+    }
+  };
+
+  return (
+    <section className="card flush">
+      <div style={{ padding: "20px 24px" }}>
+        <div className="section-title">{t.games.displayTitle}</div>
+        <div className="small muted" style={{ marginTop: 4 }}>{t.games.displayDesc}</div>
+      </div>
+      <div style={{ borderTop: "1px solid var(--divider)" }}>
+        {list.error ? (
+          <ErrorState error={list.error} onRetry={() => void list.reload()} />
+        ) : !list.data ? (
+          <div style={{ padding: 20 }}>
+            <Skeleton h={14} w="60%" />
+          </div>
+        ) : list.data.length === 0 ? (
+          <Empty icon={<Monitor size={26} />} text={t.games.displayNone} />
+        ) : (
+          <div className="list">
+            {list.data.map((d) => {
+              const max = d.rates.length ? Math.max(...d.rates) : d.current;
+              const below = max > d.current;
+              return (
+                <div key={d.device} className="list-row">
+                  <Monitor size={20} strokeWidth={1.6} style={{ flexShrink: 0 }} />
+                  <div className="cell-main">
+                    <div className="cell-title truncate" title={d.name}>{d.name}</div>
+                    <div className="cell-sub">
+                      {d.width} × {d.height}
+                      {below ? ` · ${fmt(t.games.displayBelowMax, { max: String(max) })}` : ""}
+                    </div>
+                  </div>
+                  {busy === d.device ? <Spinner /> : null}
+                  {below ? (
+                    <button className="btn btn-secondary sm" disabled={busy !== null} onClick={() => void setRate(d.device, max)}>
+                      {t.games.displayMax}
+                    </button>
+                  ) : null}
+                  <select
+                    className="select"
+                    style={{ height: 32, fontSize: 13 }}
+                    value={d.current}
+                    disabled={busy !== null}
+                    aria-label={`${t.games.displayTitle}: ${d.name}`}
+                    onChange={(e) => void setRate(d.device, Number(e.target.value))}
+                  >
+                    {(d.rates.includes(d.current) ? d.rates : [...d.rates, d.current].sort((a, b) => a - b)).map((r) => (
+                      <option key={r} value={r}>
+                        {fmt(t.games.hz, { hz: String(r) })}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function GamesPage() {
   const t = useT();
   const lang = useLang();
@@ -16,7 +95,14 @@ export function GamesPage() {
   const candidates = useAsync(api.gameCandidates);
   const prefs = useAsync(api.gpuPrefs);
   const [busy, setBusy] = useState<"apply" | "revert" | null>(null);
-  const [opts, setOpts] = useState<Omit<GameModeOptions, "closeApps">>({ powerPlan: true, gameMode: true, visualEffects: true, pauseUpdates: true });
+  const [opts, setOpts] = useState<Omit<GameModeOptions, "closeApps">>({
+    powerPlan: true,
+    gameMode: true,
+    visualEffects: true,
+    pauseUpdates: true,
+    disableProxy: false,
+    relaunch: true,
+  });
   const [close, setClose] = useState<Set<string>>(new Set());
   const isAdmin = useStore((s) => s.app?.isAdmin ?? true);
 
@@ -59,7 +145,14 @@ export function GamesPage() {
     { key: "gameMode", title: t.games.optGameMode, desc: t.games.optGameModeDesc },
     { key: "visualEffects", title: t.games.optVisual, desc: t.games.optVisualDesc },
     { key: "pauseUpdates", title: t.games.optUpdates, desc: t.games.optUpdatesDesc },
+    {
+      key: "disableProxy",
+      title: t.games.optProxy,
+      desc: !active && status.data && !status.data.proxyOn ? `${t.games.optProxyDesc}. ${t.games.optProxyOff}.` : t.games.optProxyDesc,
+    },
+    { key: "relaunch", title: t.games.optRelaunch, desc: t.games.optRelaunchDesc },
   ];
+  const relaunchNames = status.data?.relaunch ?? [];
 
   const addGame = async () => {
     const p = await pickPath({ directory: false, filters: [{ name: "Game", extensions: ["exe"] }] });
@@ -125,6 +218,9 @@ export function GamesPage() {
 
       {status.error ? <div className="card"><ErrorState error={status.error} onRetry={() => void status.reload()} /></div> : null}
       {status.data?.isLaptop ? <div className="notice">{t.games.laptopNote}</div> : null}
+      {active && relaunchNames.length > 0 ? (
+        <div className="notice">{fmt(t.games.relaunchList, { list: relaunchNames.join(", ") })}</div>
+      ) : null}
 
       <div className="grid-2" style={{ alignItems: "start" }}>
         <section className="card flush">
@@ -182,6 +278,8 @@ export function GamesPage() {
           )}
         </section>
       </div>
+
+      <RefreshRateCard />
 
       {/* GPU preference */}
       <section className="card flush">

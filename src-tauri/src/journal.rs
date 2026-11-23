@@ -31,6 +31,8 @@ pub enum Undo {
     Power { guid: String },
     /// Previous ProxyEnable value (HKCU Internet Settings).
     Proxy { enable: u32 },
+    /// Previous refresh rate of a monitor (GDI device name, e.g. \\.\DISPLAY1).
+    Refresh { device: String, hz: u32 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -248,6 +250,7 @@ fn apply(dir: &Path, undo: &Undo) -> Res<()> {
             if ok { Ok(()) } else { Err(err) }
         }
         Undo::Proxy { enable } => crate::diagnostics::set_proxy_enable(*enable),
+        Undo::Refresh { device, hz } => crate::display::set_rate(device, *hz).map(|_| ()),
         Undo::GameMode => {
             if !crate::games::is_active(dir) {
                 return Err(tr("Игровой режим уже выключен", "Game mode is already off"));

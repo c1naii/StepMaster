@@ -15,6 +15,7 @@ const HIGH_PERF: &str = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
 const GAMEBAR: &str = r"Software\Microsoft\GameBar";
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 const WU_UX: &str = r"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings";
+const INET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 const WU_VALUES: &[&str] = &[
     "PauseUpdatesStartTime",
     "PauseUpdatesExpiryTime",
@@ -37,6 +38,10 @@ struct Saved {
     transparency: Option<PrevDword>,
     client_anim: Option<bool>,
     wu_values: Option<HashMap<String, String>>,
+    /// ProxyEnable before game mode turned the system proxy off.
+    proxy_enable: Option<u32>,
+    /// Programs closed by game mode, started again (not elevated) when it is turned off.
+    relaunch: Vec<String>,
 }
 
 /// Previous registry value, explicitly recording "did not exist" (so revert deletes it).
@@ -85,10 +90,25 @@ pub struct Status {
     since: Option<u64>,
     applied: Vec<String>,
     is_laptop: bool,
+    /// File names of the programs that will be opened again when game mode is turned off.
+    relaunch: Vec<String>,
+    /// The system proxy (often a VPN client) is on right now.
+    proxy_on: bool,
+}
+
+fn proxy_enabled() -> bool {
+    get_dword(HKEY_CURRENT_USER, INET_SETTINGS, "ProxyEnable") == Some(1)
 }
 
 fn status_of(s: &Saved) -> Status {
-    Status { active: s.active, since: s.since, applied: s.applied.clone(), is_laptop: is_laptop() }
+    Status {
+        active: s.active,
+        since: s.since,
+        applied: s.applied.clone(),
+        is_laptop: is_laptop(),
+        relaunch: s.relaunch.iter().map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).collect(),
+        proxy_on: proxy_enabled(),
+    }
 }
 
 #[tauri::command]
@@ -243,6 +263,39 @@ pub struct Options {
     visual_effects: bool,
     pause_updates: bool,
     close_apps: Vec<String>,
+    /// Turn off the system proxy (VPN clients set one; it can break game downloads).
+    #[serde(default)]
+    disable_proxy: bool,
+    /// Open the closed programs again when game mode is turned off.
+    #[serde(default)]
+    relaunch: bool,
+}
+
+/// A path from game-mode.json (user-writable folder) that is safe to start again:
+/// a local, existing .exe. It is started through Explorer, so never with our admin rights.
+fn relaunchable(p: &str) -> bool {
+    let path = Path::new(p);
+    !p.starts_with(r"\\")
+        && path.is_absolute()
+        && path.extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
+        && path.is_file()
+        && !util::is_protected_path(path)
+}
+
+/// Starts the programs game mode closed. Explorer starts them as the normal user (not elevated);
+/// programs that are already running again are skipped.
+fn relaunch_apps(paths: &[String]) {
+    use std::os::windows::process::CommandExt;
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Always));
+    let running: Vec<String> = sys.processes().values().filter_map(|p| p.exe().map(|e| e.to_string_lossy().to_lowercase())).collect();
+    for p in paths.iter().take(30) {
+        if !relaunchable(p) || running.contains(&p.to_lowercase()) {
+            continue;
+        }
+        let _ = std::process::Command::new(util::sys_tool("explorer.exe")).raw_arg(format!("\"{}\"", p.replace('"', ""))).spawn();
+    }
 }
 
 #[tauri::command]
@@ -317,13 +370,33 @@ pub async fn game_apply(app: AppHandle, options: Options) -> Res<Status> {
                 Err(e) => errors.push(e),
             }
         }
+        if options.disable_proxy && proxy_enabled() {
+            saved.proxy_enable = Some(1);
+            persist(&saved)?;
+            match crate::diagnostics::set_proxy_enable(0) {
+                Ok(()) => saved.applied.push("disableProxy".into()),
+                Err(e) => errors.push(e),
+            }
+        }
         if !options.close_apps.is_empty() {
             let wanted: Vec<String> = options.close_apps.iter().map(|n| n.to_lowercase()).collect();
-            for p in list_processes(&st) {
-                let n = p.name.to_lowercase();
-                if wanted.contains(&n) && !is_critical(&n) {
-                    let _ = crate::system::kill_pid(&st, p.pid);
+            let victims: Vec<ProcessInfo> = list_processes(&st).into_iter().filter(|p| wanted.contains(&p.name.to_lowercase()) && !is_critical(&p.name.to_lowercase())).collect();
+            if options.relaunch {
+                // One start per program (a browser has dozens of processes with the same exe).
+                for p in &victims {
+                    if let Some(exe) = &p.exe {
+                        if relaunchable(exe) && !saved.relaunch.iter().any(|x| x.eq_ignore_ascii_case(exe)) {
+                            saved.relaunch.push(exe.clone());
+                        }
+                    }
                 }
+                if !saved.relaunch.is_empty() {
+                    saved.applied.push("relaunch".into());
+                }
+                persist(&saved)?;
+            }
+            for p in victims {
+                let _ = crate::system::kill_pid(&st, p.pid);
             }
         }
         persist(&saved)?;
@@ -349,6 +422,15 @@ pub async fn game_revert(app: AppHandle) -> Res<Status> {
 static GAME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 pub fn revert_at(dir: &std::path::Path) -> Res<Status> {
+    revert_inner(dir, true)
+}
+
+/// Uninstall: put settings back, but don't open the closed programs again.
+pub fn revert_quiet(dir: &std::path::Path) -> Res<Status> {
+    revert_inner(dir, false)
+}
+
+fn revert_inner(dir: &std::path::Path, relaunch: bool) -> Res<Status> {
     let _g = GAME_LOCK.lock();
     {
         let dir = dir.to_path_buf();
@@ -399,6 +481,19 @@ pub fn revert_at(dir: &std::path::Path) -> Res<Status> {
                 Err(e) => errors.push(e),
             }
         }
+        if let Some(prev) = saved.proxy_enable {
+            // Only 0/1 are meaningful; anything else in the (untrusted) file means "was on".
+            match crate::diagnostics::set_proxy_enable(if prev == 0 { 0 } else { 1 }) {
+                Ok(()) => left.proxy_enable = None,
+                Err(e) => errors.push(e),
+            }
+        }
+        if !saved.relaunch.is_empty() {
+            if relaunch {
+                relaunch_apps(&saved.relaunch);
+            }
+            left.relaunch.clear();
+        }
         if !errors.is_empty() {
             write_json(&state_path(&dir), &left)?;
             return Err(errors.join("; "));
@@ -416,6 +511,8 @@ const HEAVY: &[&str] = &[
     "discord.exe", "telegram.exe", "teams.exe", "ms-teams.exe", "onedrive.exe", "spotify.exe", "slack.exe",
     "skype.exe", "zoom.exe", "viber.exe", "whatsapp.exe", "qbittorrent.exe", "utorrent.exe", "creative cloud.exe",
     "adobecollabsync.exe", "dropbox.exe", "yandexdisk2.exe", "googledrivefs.exe",
+    // Live wallpapers and desktop widgets: little memory, but they keep the GPU/CPU busy.
+    "wallpaper32.exe", "wallpaper64.exe", "rainmeter.exe", "lively.exe",
 ];
 
 #[tauri::command]

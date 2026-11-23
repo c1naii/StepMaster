@@ -6,7 +6,7 @@ import { fmt, useLang, useT } from "../../i18n";
 import type { Dict } from "../../i18n/ru";
 import { api } from "../../lib/api";
 import { invalidate } from "../../lib/cache";
-import { formatBytes } from "../../lib/format";
+import { formatBytes, localeOf } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import type { JournalEntry, Lang } from "../../lib/types";
 
@@ -58,7 +58,7 @@ function dayLabel(at: number, t: Dict, lang: Lang): string {
   const diff = Math.round((start(today) - start(d)) / 86_400_000);
   if (diff === 0) return t.journal.today;
   if (diff === 1) return t.journal.yesterday;
-  return d.toLocaleDateString(lang === "ru" ? "ru-RU" : "en-US", { day: "numeric", month: "long", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+  return d.toLocaleDateString(localeOf(lang), { day: "numeric", month: "long", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
 }
 
 export function JournalPage() {
@@ -131,7 +131,7 @@ export function JournalPage() {
                     <div className="cell-main">
                       <div className="cell-title">{entryText(e, t, lang)}</div>
                       <div className="cell-sub">
-                        {new Date(e.at * 1000).toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-US", { hour: "2-digit", minute: "2-digit" })}
+                        {new Date(e.at * 1000).toLocaleTimeString(localeOf(lang), { hour: "2-digit", minute: "2-digit" })}
                       </div>
                     </div>
                     {e.reverted ? (

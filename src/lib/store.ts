@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS: Settings = {
   motion: "full",
   hotkey: "Ctrl+Shift+Space",
   trayMonitor: true,
+  updateNotify: true,
 };
 
 interface State {

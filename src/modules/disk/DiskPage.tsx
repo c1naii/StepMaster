@@ -7,14 +7,14 @@ import { api, errorText, pickPath, subscribe } from "../../lib/api";
 import { baseName, formatBytes, parentPath, pct } from "../../lib/format";
 import { usePoll } from "../../lib/hooks";
 import { useStore } from "../../lib/store";
-import type { DiskEntry, DiskFolder, DuplicateGroup, ScanProgress } from "../../lib/types";
+import type { DiskEntry, DiskFolder, DuplicateGroup, Lang, ScanProgress } from "../../lib/types";
 import { Downloads } from "./Downloads";
 import { recycle as recycleShared } from "./recycle";
 
 type Tab = "analyze" | "downloads" | "large" | "dupes";
 
 /** Shared confirm-with-paths + Recycle Bin; true if anything was recycled. */
-async function recycle(paths: string[], t: ReturnType<typeof useT>, lang: "ru" | "en"): Promise<boolean> {
+async function recycle(paths: string[], t: ReturnType<typeof useT>, lang: Lang): Promise<boolean> {
   return (await recycleShared(paths, t, lang)).length > 0;
 }
 

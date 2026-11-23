@@ -1,12 +1,12 @@
-import { Cable, Copy, Eye, EyeOff, Gauge, Globe, Layers, RotateCcw, Wifi } from "lucide-react";
+import { Activity, AlertTriangle, Cable, CheckCircle2, Copy, Eye, EyeOff, Gauge, Globe, Layers, RotateCcw, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Empty, ErrorState, PageHeader, Ring, SearchInput, SkeletonRows, Spinner, Tabs, notify, StopButton } from "../../components/ui";
-import { useLang, useT } from "../../i18n";
+import { fmt, useLang, useT } from "../../i18n";
 import { api, subscribe } from "../../lib/api";
 import { formatDecimal } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { ask, useStore } from "../../lib/store";
-import type { DnsPreset, SpeedProgress, SpeedResult } from "../../lib/types";
+import type { DnsPreset, SpeedProgress, SpeedResult, WifiAnalysis } from "../../lib/types";
 
 type Tab = "overview" | "speed" | "connections" | "wifi";
 const TABS: Tab[] = ["overview", "speed", "connections", "wifi"];
@@ -276,6 +276,104 @@ function Connections() {
   );
 }
 
+// The last analysis survives tab switches (a scan takes a few seconds).
+let lastWifi: WifiAnalysis | null | undefined;
+
+function WifiAnalysisCard() {
+  const t = useT();
+  const [data, setData] = useState<WifiAnalysis | null | undefined>(lastWifi);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api.wifiAnalyze();
+      lastWifi = r;
+      setData(r);
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const yesNo = (v: boolean | null, yes: string, no: string) => (v === null ? t.network.waUnknown : v ? yes : no);
+  const rows: [string, string][] =
+    data && data.connected
+      ? [
+          [t.network.waNetwork, data.ssid || "—"],
+          [t.network.waBand, data.band ? fmt(t.network.waBandValue, { band: data.band.replace(".", ",") }) : t.network.waUnknown],
+          [t.network.waChannel, data.channel ? String(data.channel) : t.network.waUnknown],
+          [t.network.waSignal, `${data.signal}%${data.rssi !== null ? ` (${data.rssi} dBm)` : ""}`],
+          [t.network.waLink, fmt(t.network.waLinkValue, { rx: String(data.rxMbps), tx: String(data.txMbps) })],
+          [t.network.waStandard, data.standard || t.network.waUnknown],
+          [t.network.waSupports5, yesNo(data.supports5, t.network.waYes, t.network.waNo)],
+          [t.network.waNeighbors, fmt(t.network.waNeighborsValue, { n: String(data.neighbors), total: String(data.networks) })],
+          [t.network.waSuspend, yesNo(data.selectiveSuspend, t.network.waOn, t.network.waOff)],
+        ]
+      : [];
+  const tipParams: Record<string, string> = data ? { n: String(data.neighbors), ch: String(data.betterChannel ?? ""), signal: String(data.signal) } : {};
+
+  return (
+    <section className="card flush">
+      <div className="row" style={{ padding: "20px 24px" }}>
+        <div className="cell-main">
+          <div className="section-title">{t.network.waTitle}</div>
+          <div className="small muted" style={{ marginTop: 4 }}>{data?.adapter || t.network.waDesc}</div>
+        </div>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => void run()}>
+          {busy ? <Spinner /> : <Activity size={16} />}
+          {busy ? t.network.waRunning : data === undefined ? t.network.waRun : t.network.waAgain}
+        </button>
+      </div>
+      {data === undefined ? null : (
+        <div style={{ borderTop: "1px solid var(--divider)" }}>
+          {data === null ? (
+            <Empty icon={<WifiOff size={26} />} text={t.network.waNoWifi} />
+          ) : !data.connected ? (
+            <Empty icon={<WifiOff size={26} />} text={t.network.waNotConnected} />
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "16px 24px", padding: "20px 24px" }}>
+                {rows.map(([k, v]) => (
+                  <div key={k} style={{ minWidth: 0 }}>
+                    <div className="small faint">{k}</div>
+                    <div className="truncate" title={v} style={{ marginTop: 2, fontWeight: 500 }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ borderTop: "1px solid var(--divider)" }}>
+                {data.tips.length === 0 ? (
+                  <div className="row" style={{ padding: "16px 24px" }}>
+                    <CheckCircle2 size={18} strokeWidth={1.6} />
+                    <span>{t.network.waAllGood}</span>
+                  </div>
+                ) : (
+                  <div className="list">
+                    {data.tips.map((code) => {
+                      const tip = t.network.wifiTips[code];
+                      if (!tip) return null;
+                      return (
+                        <div key={code} className="list-row" style={{ alignItems: "flex-start", paddingTop: 14, paddingBottom: 14 }}>
+                          <AlertTriangle size={18} strokeWidth={1.6} style={{ flexShrink: 0, marginTop: 2 }} />
+                          <div className="cell-main">
+                            <div className="cell-title">{fmt(tip.title, tipParams)}</div>
+                            <div className="small muted" style={{ marginTop: 4, whiteSpace: "normal" }}>{fmt(tip.text, tipParams)}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function WifiPasswords() {
   const t = useT();
   const list = useAsync(api.wifiProfiles);
@@ -365,7 +463,13 @@ export function NetworkPage() {
       {tab === "overview" ? <Overview /> : null}
       {tab === "speed" ? <Speed /> : null}
       {tab === "connections" ? <Connections /> : null}
-      {tab === "wifi" ? <WifiPasswords /> : null}
+      {tab === "wifi" ? (
+        <>
+          <WifiAnalysisCard />
+          <div className="section-title">{t.network.wifiSaved}</div>
+          <WifiPasswords />
+        </>
+      ) : null}
     </>
   );
 }

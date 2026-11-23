@@ -28,7 +28,7 @@ export function ProgramsPage() {
     const needle = q.trim().toLowerCase();
     let arr = (list.data ?? []).filter((p) => filter === "all" || p.kind === filter);
     if (needle) arr = arr.filter((p) => `${p.name} ${p.publisher}`.toLowerCase().includes(needle));
-    const collator = new Intl.Collator(lang === "ru" ? "ru" : "en", { sensitivity: "base", numeric: true });
+    const collator = new Intl.Collator(lang, { sensitivity: "base", numeric: true });
     return [...arr].sort((a, b) => {
       if (sort === "size") return b.size - a.size || collator.compare(a.name, b.name);
       if (sort === "date") return (b.installDate || "").localeCompare(a.installDate || "") || collator.compare(a.name, b.name);

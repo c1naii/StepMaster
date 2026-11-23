@@ -1,6 +1,6 @@
 // Shared types between UI and the Rust backend (serde camelCase).
 
-export type Lang = "ru" | "en";
+export type Lang = "ru" | "en" | "uk" | "es" | "fr" | "de" | "pt" | "zh";
 export type MotionLevel = "full" | "reduced" | "off";
 
 export interface Settings {
@@ -11,6 +11,7 @@ export interface Settings {
   motion: MotionLevel;
   hotkey: string; // e.g. "Ctrl+Shift+Space" or "" (off)
   trayMonitor: boolean;
+  updateNotify: boolean; // update popup in the bottom-right corner
 }
 
 export interface WingetState {
@@ -322,6 +323,8 @@ export interface GameModeOptions {
   visualEffects: boolean;
   pauseUpdates: boolean;
   closeApps: string[]; // process names, e.g. "chrome.exe" (all instances are closed)
+  disableProxy: boolean; // turn off the system proxy (VPN clients) while playing
+  relaunch: boolean; // open the closed programs again when game mode is turned off
 }
 
 export interface GameModeStatus {
@@ -329,6 +332,37 @@ export interface GameModeStatus {
   since: number | null;
   applied: string[];
   isLaptop: boolean;
+  relaunch: string[]; // file names that will be opened again
+  proxyOn: boolean;
+}
+
+export interface DisplayInfo {
+  device: string; // \\.\DISPLAY1
+  name: string;
+  width: number;
+  height: number;
+  current: number;
+  rates: number[]; // ascending, at the current resolution
+  primary: boolean;
+}
+
+export interface WifiAnalysis {
+  connected: boolean;
+  adapter: string;
+  ssid: string;
+  band: "2.4" | "5" | "6" | "";
+  channel: number;
+  signal: number;
+  rssi: number | null;
+  rxMbps: number;
+  txMbps: number;
+  standard: string;
+  supports5: boolean | null;
+  neighbors: number;
+  networks: number;
+  betterChannel: number | null;
+  selectiveSuspend: boolean | null;
+  tips: string[]; // adapter24 | use5 | crowded | channel | weak | suspend
 }
 
 export interface GpuPref {

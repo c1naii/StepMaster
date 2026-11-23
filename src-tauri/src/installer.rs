@@ -227,7 +227,7 @@ pub async fn uninstall_run(app: AppHandle, remove_data: bool) -> Res<()> {
     let state_dir = app.state::<crate::AppState>().data_dir.clone();
     let app2 = app.clone();
     util::blocking(move || {
-        let _ = crate::games::revert_at(&state_dir);
+        let _ = crate::games::revert_quiet(&state_dir);
         crate::wallpaper::restore_if_ours(&app2);
         Ok(())
     })
@@ -236,6 +236,7 @@ pub async fn uninstall_run(app: AppHandle, remove_data: bool) -> Res<()> {
         stop_instances_in(&install_dir);
         // Autostart task, shortcuts, "Apps & features" entry.
         let _ = util::run_hidden("schtasks.exe", &["/Delete", "/TN", TASK_NAME, "/F"]);
+        let _ = util::run_hidden("schtasks.exe", &["/Delete", "/TN", crate::notify::TASK_NAME, "/F"]);
         let _ = std::fs::remove_file(start_menu_lnk());
         if let Some(d) = desktop_dir() {
             let _ = std::fs::remove_file(d.join("StepMaster.lnk"));

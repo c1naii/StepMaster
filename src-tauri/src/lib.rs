@@ -2,6 +2,7 @@
 mod cleanup;
 mod diagnostics;
 mod disk;
+mod display;
 mod downloads;
 mod fsops;
 mod games;
@@ -9,6 +10,7 @@ mod icons;
 mod installer;
 mod journal;
 mod network;
+mod notify;
 mod ops;
 mod programs;
 mod protection;
@@ -49,13 +51,26 @@ pub use tools::wait_for_pid;
 
 pub fn run() {
     let autostart_launch = std::env::args().any(|a| a == "--autostart");
+    // Started by the logon task only to look for an update (see notify.rs).
+    let check_launch = std::env::args().any(|a| a == "--check-update");
+    notify::CHECK_ONLY.store(check_launch, Ordering::SeqCst);
 
     let normal = installer::mode() == "normal";
     let mut builder = tauri::Builder::default();
-    if normal {
+    // Dev preview of the update popup runs next to an installed copy, so it skips the guard.
+    if normal && notify::preview_version().is_none() {
         // Must be first: a second launch just focuses the running window.
         // Setup / uninstall run alongside an installed copy, so they skip the guard.
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // The update-check task found StepMaster already running: it checks by itself.
+            if args.iter().any(|a| a == "--check-update") {
+                return;
+            }
+            // Opened by the user while only the update check was running: become the normal app.
+            if notify::CHECK_ONLY.swap(false, Ordering::SeqCst) {
+                let _ = tray::create(app);
+                app.state::<AppState>().start_hidden.store(false, Ordering::SeqCst);
+            }
             tools::show_main(app);
         }));
     }
@@ -80,7 +95,8 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&data_dir);
             let s = settings::load(&data_dir);
             *util::LANG.write() = s.language.clone();
-            let start_hidden = autostart_launch && s.start_minimized;
+            let start_hidden = (autostart_launch && s.start_minimized) || check_launch;
+            let update_notify = s.update_notify;
             let hotkey = s.hotkey.clone();
             let autostart = s.autostart;
 
@@ -110,7 +126,17 @@ pub fn run() {
                 }
                 // A portable copy that just self-updated lands here: drop its old exe.
                 std::thread::spawn(updater::cleanup_old);
+            } else if check_launch {
+                // Only the update check: no tray, hotkey or wallpapers. Exits by itself.
+                if update_notify {
+                    notify::spawn_check(handle.clone(), 0);
+                } else {
+                    handle.exit(0);
+                }
             } else {
+                if autostart_launch && update_notify {
+                    notify::spawn_check(handle.clone(), 20);
+                }
                 if let Err(e) = tray::create(&handle) {
                     eprintln!("tray: {e}");
                 }
@@ -125,6 +151,10 @@ pub fn run() {
                     installer::refresh_registered_version();
                     if autostart && util::is_admin() {
                         let _ = settings::apply_autostart(true);
+                    }
+                    // The logon update check follows the setting (also keeps its exe path current).
+                    if util::is_admin() {
+                        let _ = notify::apply_task(update_notify);
                     }
                     // First run on a PC without winget: put it in now, so "Install" just works.
                     if util::is_admin() {
@@ -171,6 +201,8 @@ pub fn run() {
             updater::update_notes,
             updater::whats_new,
             updater::whats_new_seen,
+            notify::toast_ready,
+            notify::toast_close,
             icons::icons_get,
             installer::install_state,
             installer::install_run,
@@ -240,6 +272,10 @@ pub fn run() {
             network::speed_test,
             network::connections_list,
             network::wifi_profiles,
+            network::wifi_analyze,
+            // monitors
+            display::display_list,
+            display::display_set_rate,
             // games
             games::game_status,
             games::game_apply,

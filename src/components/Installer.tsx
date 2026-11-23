@@ -1,11 +1,11 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Check, FolderOpen, X } from "lucide-react";
+import { Check, FolderOpen, Globe, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fmt, useT } from "../i18n";
+import { LANGS, fmt, useT } from "../i18n";
 import { api, errorText, pickPath, win, subscribe } from "../lib/api";
 import type { InstallState, Lang } from "../lib/types";
 import { useStore } from "../lib/store";
-import { Checkbox, Spinner, Tabs, useCalm } from "./ui";
+import { Checkbox, Spinner, useCalm } from "./ui";
 
 const STEPS = ["copy", "register", "shortcuts", "launch"] as const;
 type Step = (typeof STEPS)[number];
@@ -16,7 +16,7 @@ export function finalDir(dir: string): string {
   return /(^|\\)stepmaster$/i.test(d) ? d : `${d}\\StepMaster`;
 }
 
-/** RU / EN right in the setup and uninstall windows. Saved to settings, so the installed
+/** Language picker right in the setup and uninstall windows. Saved to settings, so the installed
  *  program opens in the language chosen here. */
 function LangSwitch() {
   const settings = useStore((s) => s.settings);
@@ -35,14 +35,14 @@ function LangSwitch() {
   };
   return (
     <div className="installer-lang">
-      <Tabs
-        value={settings.language}
-        onChange={(v) => void change(v)}
-        items={[
-          { id: "ru", label: "RU" },
-          { id: "en", label: "EN" },
-        ]}
-      />
+      <Globe size={15} strokeWidth={1.7} aria-hidden />
+      <select className="select" value={settings.language} aria-label="Language" onChange={(e) => void change(e.target.value as Lang)}>
+        {LANGS.map((l) => (
+          <option key={l.id} value={l.id}>
+            {l.name}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
